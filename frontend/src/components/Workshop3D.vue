@@ -551,6 +551,8 @@ watch(
         kind: 'mold',
         id: m.id,
         name: m.mold_number,
+        product_type_id: m.product_type_id,
+        zone: m.zone || `Z=${Number(m.pos_z || 0)}m Qator`,
         pos_x: Number(m.pos_x || 0),
         pos_z: Number(m.pos_z || 0),
         pos_y: 0,
@@ -597,36 +599,44 @@ watch(
 
 async function saveSelectedEdit() {
   if (!editItemForm.value.kind) return
-  if (editItemForm.value.kind === 'mold') {
-    await store.updateMoldPosition(editItemForm.value.id, {
-      pos_x: Number(editItemForm.value.pos_x),
-      pos_z: Number(editItemForm.value.pos_z),
-      stack_tier: Number(editItemForm.value.stack_tier || 1),
-      rotation_deg: Number(editItemForm.value.rotation_deg || 0),
-      status: editItemForm.value.status,
-      notes: editItemForm.value.notes,
-    })
-  } else if (editItemForm.value.kind === 'element') {
-    const extra = { ...(editItemForm.value.extra_obj || {}) }
-    if (editItemForm.value.element_type === 'tal_crane') {
-      extra.hoist_x = Number(editItemForm.value.hoist_x || 0)
-    } else if (editItemForm.value.element_type === 'stoyka') {
-      extra.pair_spacing_m = Number(editItemForm.value.length_m || 1.45)
-    } else if (editItemForm.value.element_type === 'tal_rails') {
-      extra.gauge_m = Number(editItemForm.value.width_m || 6.0)
+  try {
+    if (editItemForm.value.kind === 'mold') {
+      await store.updateMoldPosition(editItemForm.value.id, {
+        mold_number: editItemForm.value.name,
+        product_type_id: editItemForm.value.product_type_id,
+        zone: editItemForm.value.zone,
+        pos_x: Number(editItemForm.value.pos_x),
+        pos_z: Number(editItemForm.value.pos_z),
+        stack_tier: Number(editItemForm.value.stack_tier || 1),
+        rotation_deg: Number(editItemForm.value.rotation_deg || 0),
+        status: editItemForm.value.status,
+        notes: editItemForm.value.notes,
+      })
+    } else if (editItemForm.value.kind === 'element') {
+      const extra = { ...(editItemForm.value.extra_obj || {}) }
+      if (editItemForm.value.element_type === 'tal_crane') {
+        extra.hoist_x = Number(editItemForm.value.hoist_x || 0)
+      } else if (editItemForm.value.element_type === 'stoyka') {
+        extra.pair_spacing_m = Number(editItemForm.value.length_m || 1.45)
+      } else if (editItemForm.value.element_type === 'tal_rails') {
+        extra.gauge_m = Number(editItemForm.value.width_m || 6.0)
+      }
+      await store.updateWorkshopElement(editItemForm.value.id, {
+        element_type: editItemForm.value.element_type || 'stoyka',
+        name: editItemForm.value.name,
+        pos_x: Number(editItemForm.value.pos_x),
+        pos_z: Number(editItemForm.value.pos_z),
+        pos_y: Number(editItemForm.value.pos_y || 0),
+        rotation_deg: Number(editItemForm.value.rotation_deg || 0),
+        length_m: Number(editItemForm.value.length_m || 1.0),
+        width_m: Number(editItemForm.value.width_m || 1.0),
+        height_m: Number(editItemForm.value.height_m || 0.15),
+        extra_json: JSON.stringify(extra),
+        notes: editItemForm.value.notes,
+      })
     }
-    await store.updateWorkshopElement(editItemForm.value.id, {
-      name: editItemForm.value.name,
-      pos_x: Number(editItemForm.value.pos_x),
-      pos_z: Number(editItemForm.value.pos_z),
-      pos_y: Number(editItemForm.value.pos_y || 0),
-      rotation_deg: Number(editItemForm.value.rotation_deg || 0),
-      length_m: Number(editItemForm.value.length_m || 1.0),
-      width_m: Number(editItemForm.value.width_m || 1.0),
-      height_m: Number(editItemForm.value.height_m || 0.15),
-      extra_json: JSON.stringify(extra),
-      notes: editItemForm.value.notes,
-    })
+  } catch (err) {
+    console.warn('3D element saqlashda xatolik:', err)
   }
 }
 

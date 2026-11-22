@@ -135,7 +135,18 @@ export const useErpStore = defineStore('erp', () => {
       method: 'POST',
       body: JSON.stringify(payload),
     })
-    await fetchAll()
+    if (res && res.mold) {
+      const created = { ...res.mold }
+      if (molds.value.some((m) => m.id === created.id)) {
+        const maxId = molds.value.reduce((acc, m) => Math.max(acc, Number(m.id || 0)), 0)
+        created.id = maxId + 1
+      }
+      molds.value = [...molds.value, created]
+      selectedMold.value = created
+      selectedElement.value = null
+    } else {
+      await fetchAll()
+    }
     return res
   }
 
@@ -144,26 +155,61 @@ export const useErpStore = defineStore('erp', () => {
       method: 'POST',
       body: JSON.stringify(payload),
     })
-    await fetchAll()
+    if (res && Array.isArray(res.created_molds)) {
+      let maxMoldId = molds.value.reduce((acc, m) => Math.max(acc, Number(m.id || 0)), 0)
+      const toAdd = res.created_molds.map((cm) => {
+        const item = { ...cm }
+        if (molds.value.some((m) => m.id === item.id)) {
+          maxMoldId += 1
+          item.id = maxMoldId
+        } else {
+          maxMoldId = Math.max(maxMoldId, Number(item.id || 0))
+        }
+        return item
+      })
+      molds.value = [...molds.value, ...toAdd]
+      if (res.stoyka_element) {
+        const stEl = { ...res.stoyka_element }
+        if (workshopElements.value.some((e) => e.id === stEl.id)) {
+          const maxElId = workshopElements.value.reduce((acc, e) => Math.max(acc, Number(e.id || 0)), 0)
+          stEl.id = maxElId + 1
+        }
+        workshopElements.value = [...workshopElements.value, stEl]
+      }
+    } else {
+      await fetchAll()
+    }
     return res
   }
 
   async function updateMoldPosition(moldId, payload) {
-    await apiFetch(`/api/molds/${moldId}/position`, {
+    const res = await apiFetch(`/api/molds/${moldId}/position`, {
       method: 'PUT',
       body: JSON.stringify(payload),
     })
-    await fetchAll()
+    const idx = molds.value.findIndex((m) => m.id === moldId)
+    if (idx !== -1) {
+      const updated = res && res.mold
+        ? { ...molds.value[idx], ...res.mold, id: moldId }
+        : { ...molds.value[idx], ...payload, id: moldId }
+      const nextList = [...molds.value]
+      nextList[idx] = updated
+      molds.value = nextList
+      if (selectedMold.value && selectedMold.value.id === moldId) {
+        selectedMold.value = updated
+      }
+    }
+    return res
   }
 
   async function deleteMold(moldId) {
     await apiFetch(`/api/molds/${moldId}`, {
       method: 'DELETE',
     })
+    molds.value = molds.value.filter((m) => m.id !== moldId)
     if (selectedMold.value && selectedMold.value.id === moldId) {
       selectedMold.value = null
     }
-    await fetchAll()
   }
 
   async function createWorkshopElement(payload) {
@@ -171,10 +217,15 @@ export const useErpStore = defineStore('erp', () => {
       method: 'POST',
       body: JSON.stringify(payload),
     })
-    await fetchAll()
-    selectedElement.value = res
+    const created = { ...res }
+    if (workshopElements.value.some((e) => e.id === created.id)) {
+      const maxId = workshopElements.value.reduce((acc, e) => Math.max(acc, Number(e.id || 0)), 0)
+      created.id = maxId + 1
+    }
+    workshopElements.value = [...workshopElements.value, created]
+    selectedElement.value = created
     selectedMold.value = null
-    return res
+    return created
   }
 
   async function updateWorkshopElement(elemId, payload) {
@@ -182,18 +233,29 @@ export const useErpStore = defineStore('erp', () => {
       method: 'PUT',
       body: JSON.stringify(payload),
     })
-    await fetchAll()
-    return res
+    const updated = { ...res, id: elemId }
+    const idx = workshopElements.value.findIndex((e) => e.id === elemId)
+    if (idx !== -1) {
+      const nextList = [...workshopElements.value]
+      nextList[idx] = { ...nextList[idx], ...updated }
+      workshopElements.value = nextList
+    } else {
+      workshopElements.value = [...workshopElements.value, updated]
+    }
+    if (selectedElement.value && selectedElement.value.id === elemId) {
+      selectedElement.value = { ...selectedElement.value, ...updated }
+    }
+    return updated
   }
 
   async function deleteWorkshopElement(elemId) {
     await apiFetch(`/api/workshop-elements/${elemId}`, {
       method: 'DELETE',
     })
+    workshopElements.value = workshopElements.value.filter((e) => e.id !== elemId)
     if (selectedElement.value && selectedElement.value.id === elemId) {
       selectedElement.value = null
     }
-    await fetchAll()
   }
 
   async function clearWorkshopScene(keepRails = true) {

@@ -138,6 +138,9 @@ class PgConnectionWrapper:
     def commit(self):
         self.raw_conn.commit()
 
+    def rollback(self):
+        self.raw_conn.rollback()
+
     def close(self):
         self.raw_conn.close()
 
@@ -158,11 +161,16 @@ UZBEKISTAN_REGIONS = [
 ]
 
 
-def get_connection():
+_DB_READY = False
+_IN_INIT_DB = False
+
+
+def _raw_connect():
     pg_url = (
         os.environ.get("POSTGRES_URL_NON_POOLING")
         or os.environ.get("POSTGRES_URL")
         or os.environ.get("DATABASE_URL")
+        or os.environ.get("SUPABASE_DB_URL")
     )
     if pg_url and psycopg2 is not None:
         raw_conn = psycopg2.connect(clean_pg_url(pg_url))
@@ -173,6 +181,20 @@ def get_connection():
     conn.execute("PRAGMA journal_mode = WAL;")
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
+
+
+def get_connection():
+    global _DB_READY, _IN_INIT_DB
+    pg_url = (
+        os.environ.get("POSTGRES_URL_NON_POOLING")
+        or os.environ.get("POSTGRES_URL")
+        or os.environ.get("DATABASE_URL")
+        or os.environ.get("SUPABASE_DB_URL")
+    )
+    need_init = not _DB_READY or (not pg_url and not os.path.exists(DB_PATH))
+    if need_init and not _IN_INIT_DB:
+        init_db()
+    return _raw_connect()
 
 
 def calculate_concrete_volume_m3(
@@ -217,7 +239,17 @@ def calculate_concrete_volume_m3(
 
 
 def init_db():
-    conn = get_connection()
+    global _DB_READY, _IN_INIT_DB
+    _IN_INIT_DB = True
+    try:
+        _init_db_tables()
+        _DB_READY = True
+    finally:
+        _IN_INIT_DB = False
+
+
+def _init_db_tables():
+    conn = _raw_connect()
     cur = conn.cursor()
 
     # 1. Settings
@@ -249,7 +281,8 @@ def init_db():
             cur.execute(f"ALTER TABLE settings ADD COLUMN {col_name} {col_def};")
             conn.commit()
         except Exception:
-            pass
+            if hasattr(conn, "rollback"):
+                conn.rollback()
 
     # 1b. Workshop Structural & Equipment Elements (Tal relslari, Talning o'zi, Meshalka, Vibrator, Taglik Stoykalar)
     cur.execute("""

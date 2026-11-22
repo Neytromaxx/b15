@@ -67,6 +67,7 @@ class WorkshopElementCreate(BaseModel):
 
 
 class WorkshopElementUpdate(BaseModel):
+    element_type: Optional[str] = None
     name: Optional[str] = None
     pos_x: float
     pos_z: float
@@ -131,6 +132,8 @@ class MoldCreate(BaseModel):
 
 
 class MoldPositionUpdate(BaseModel):
+    mold_number: Optional[str] = None
+    product_type_id: Optional[int] = None
     zone: Optional[str] = None
     pos_x: float
     pos_z: float
@@ -540,11 +543,42 @@ def list_molds():
     return molds
 
 
+def _fetch_single_mold(cur, mold_id: int):
+    cur.execute("""
+        SELECT m.*,
+               p.code as product_code,
+               p.name as product_name,
+               p.category as product_category,
+               p.casting_mode as casting_mode,
+               p.inner_bottom_cm, p.inner_side_cm, p.inner_top_cm, p.wall_thickness_cm, p.length_cm,
+               p.outer_diameter_cm, p.inner_diameter_cm, p.max_height_cm, p.default_height_cm,
+               p.casting_labor_cost, p.selling_price, p.color_hex
+        FROM molds m
+        JOIN product_types p ON p.id = m.product_type_id
+        WHERE m.id = ?
+    """, (mold_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    m = dict(row)
+    cur.execute("SELECT * FROM production_events WHERE mold_id = ? ORDER BY id DESC LIMIT 6", (mold_id,))
+    m["recent_events"] = [dict(e) for e in cur.fetchall()]
+    cur.execute("SELECT * FROM mold_repairs WHERE mold_id = ? ORDER BY id DESC LIMIT 5", (mold_id,))
+    m["repairs"] = [dict(rep) for rep in cur.fetchall()]
+    return m
+
+
 @app.post("/api/molds")
 def create_mold(payload: MoldCreate):
     conn = get_connection()
     cur = conn.cursor()
     try:
+        mold_num = payload.mold_number
+        cur.execute("SELECT id FROM molds WHERE mold_number = ?", (mold_num,))
+        if cur.fetchone():
+            cur.execute("SELECT COUNT(*) as cnt FROM molds")
+            cnt = cur.fetchone()["cnt"] + 1
+            mold_num = f"{mold_num} #{cnt}"
         cur.execute("""
             INSERT INTO molds (
                 mold_number, product_type_id, zone, pos_x, pos_z, stack_tier, rotation_deg,
@@ -552,14 +586,15 @@ def create_mold(payload: MoldCreate):
                 last_quality_status, notes
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 'clean', ?)
         """, (
-            payload.mold_number, payload.product_type_id, payload.zone,
+            mold_num, payload.product_type_id, payload.zone,
             payload.pos_x, payload.pos_z, payload.stack_tier, payload.rotation_deg,
             payload.status, payload.notes
         ))
         conn.commit()
         new_id = cur.lastrowid
+        mold_obj = _fetch_single_mold(cur, new_id)
         conn.close()
-        return {"id": new_id, "message": "Yangi qolip qo'shildi"}
+        return {"id": new_id, "mold": mold_obj, "message": "Yangi qolip qo'shildi"}
     except Exception as e:
         conn.close()
         raise HTTPException(status_code=400, detail=str(e))
@@ -572,8 +607,38 @@ def update_mold_position(mold_id: int, payload: MoldPositionUpdate):
     cur.execute("SELECT * FROM molds WHERE id = ?", (mold_id,))
     existing = cur.fetchone()
     if not existing:
+        # Resilient serverless upsert: if this serverless instance's ephemeral DB doesn't have mold_id yet, recreate it
+        prod_id = payload.product_type_id
+        if not prod_id:
+            cur.execute("SELECT id FROM product_types ORDER BY id ASC LIMIT 1")
+            p_row = cur.fetchone()
+            prod_id = p_row["id"] if p_row else 1
+        mold_num = payload.mold_number or f"#{mold_id:02d}"
+        cur.execute("SELECT id FROM molds WHERE mold_number = ?", (mold_num,))
+        if cur.fetchone():
+            mold_num = f"{mold_num}-{mold_id}"
+        cur.execute("""
+            INSERT INTO molds (
+                id, mold_number, product_type_id, zone, pos_x, pos_z, stack_tier, rotation_deg,
+                status, total_casts, consecutive_corner_defects, total_defects,
+                last_quality_status, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 'clean', ?)
+        """, (
+            mold_id,
+            mold_num,
+            prod_id,
+            payload.zone or f"Z={round(payload.pos_z, 2)}m Qator",
+            payload.pos_x,
+            payload.pos_z,
+            payload.stack_tier,
+            payload.rotation_deg,
+            payload.status or "empty",
+            payload.notes or "",
+        ))
+        conn.commit()
+        mold_obj = _fetch_single_mold(cur, mold_id)
         conn.close()
-        raise HTTPException(status_code=404, detail="Qolip topilmadi")
+        return {"status": "ok", "mold_id": mold_id, "mold": mold_obj, "upserted": True}
 
     zone = payload.zone if payload.zone is not None else existing["zone"]
     notes = payload.notes if payload.notes is not None else existing["notes"]
@@ -585,8 +650,9 @@ def update_mold_position(mold_id: int, payload: MoldPositionUpdate):
         WHERE id = ?
     """, (zone, payload.pos_x, payload.pos_z, payload.stack_tier, payload.rotation_deg, status, notes, mold_id))
     conn.commit()
+    mold_obj = _fetch_single_mold(cur, mold_id)
     conn.close()
-    return {"status": "ok", "mold_id": mold_id}
+    return {"status": "ok", "mold_id": mold_id, "mold": mold_obj}
 
 
 @app.delete("/api/molds/{mold_id}")
@@ -702,10 +768,19 @@ def create_batch_row_molds(payload: BatchRowMoldsCreate):
         stoyka_id = cur.lastrowid
 
     conn.commit()
+    created_molds = [m for m in (_fetch_single_mold(cur, mid) for mid in created_ids) if m is not None]
+    stoyka_elem = None
+    if stoyka_id:
+        cur.execute("SELECT * FROM workshop_elements WHERE id = ?", (stoyka_id,))
+        s_row = cur.fetchone()
+        if s_row:
+            stoyka_elem = dict(s_row)
     conn.close()
     return {
         "created_mold_ids": created_ids,
+        "created_molds": created_molds,
         "stoyka_id": stoyka_id,
+        "stoyka_element": stoyka_elem,
         "count": count,
         "step_x_m": step_x,
     }
@@ -760,8 +835,45 @@ def update_workshop_element(elem_id: int, payload: WorkshopElementUpdate):
     cur.execute("SELECT * FROM workshop_elements WHERE id = ?", (elem_id,))
     existing = cur.fetchone()
     if not existing:
+        # Resilient serverless upsert: if this serverless instance's ephemeral DB doesn't have elem_id yet, recreate it
+        inferred_type = payload.element_type
+        if not inferred_type:
+            nm_lower = (payload.name or "").lower()
+            if "tal" in nm_lower and "rels" in nm_lower:
+                inferred_type = "tal_rails"
+            elif "tal" in nm_lower or "kran" in nm_lower:
+                inferred_type = "tal_crane"
+            elif "meshalka" in nm_lower:
+                inferred_type = "meshalka"
+            elif "vibr" in nm_lower:
+                inferred_type = "vibrator"
+            else:
+                inferred_type = "stoyka"
+
+        cur.execute("""
+            INSERT INTO workshop_elements (
+                id, element_type, name, pos_x, pos_z, pos_y, rotation_deg,
+                length_m, width_m, height_m, extra_json, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            elem_id,
+            inferred_type,
+            payload.name or f"Element #{elem_id}",
+            payload.pos_x,
+            payload.pos_z,
+            payload.pos_y,
+            payload.rotation_deg,
+            payload.length_m,
+            payload.width_m,
+            payload.height_m,
+            payload.extra_json or "{}",
+            payload.notes or "",
+        ))
+        conn.commit()
+        cur.execute("SELECT * FROM workshop_elements WHERE id = ?", (elem_id,))
+        row = dict(cur.fetchone())
         conn.close()
-        raise HTTPException(status_code=404, detail="Element topilmadi")
+        return row
 
     name = payload.name if payload.name is not None else existing["name"]
     extra_json = payload.extra_json if payload.extra_json is not None else existing["extra_json"]
