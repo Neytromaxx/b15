@@ -1,9 +1,145 @@
 import sqlite3
 import math
 import os
+import re
 from datetime import datetime, timedelta
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "beton_erp.db")
+try:
+    import psycopg2
+    import psycopg2.extras
+except ImportError:
+    psycopg2 = None
+
+# Detect Supabase / Vercel Postgres connection URL automatically
+POSTGRES_URL = (
+    os.environ.get("POSTGRES_URL_NON_POOLING")
+    or os.environ.get("POSTGRES_URL")
+    or os.environ.get("DATABASE_URL")
+)
+
+if os.environ.get("VERCEL"):
+    DB_PATH = "/tmp/beton_erp.db"
+else:
+    DB_PATH = os.path.join(os.path.dirname(__file__), "beton_erp.db")
+
+
+def clean_pg_url(url: str) -> str:
+    """
+    Cleans Supabase/Vercel Postgres URI so psycopg2 connects without unknown query param errors (e.g. supa=...).
+    """
+    url = url.strip()
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    if "?" in url:
+        base, _ = url.split("?", 1)
+        return base + "?sslmode=require"
+    return url
+
+
+class PgRow(dict):
+    """
+    Dict-like row that also supports integer indexing (row[0]) just like sqlite3.Row.
+    """
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return list(self.values())[key]
+        return super().__getitem__(key)
+
+
+class PgCursorWrapper:
+    """
+    Wraps psycopg2 RealDictCursor so existing SQLite queries (?, AUTOINCREMENT, INSERT OR IGNORE, lastrowid)
+    execute seamlessly on Supabase PostgreSQL.
+    """
+    def __init__(self, raw_conn, raw_cur):
+        self.raw_conn = raw_conn
+        self.raw_cur = raw_cur
+        self.lastrowid = None
+
+    def _translate_sql(self, sql: str):
+        s = sql.strip()
+        if s.upper().startswith("PRAGMA"):
+            return None, False
+
+        # Translate AUTOINCREMENT -> SERIAL
+        s = re.sub(
+            r"INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT",
+            "SERIAL PRIMARY KEY",
+            s,
+            flags=re.IGNORECASE,
+        )
+
+        # Translate ALTER TABLE ... ADD COLUMN -> ADD COLUMN IF NOT EXISTS
+        s = re.sub(
+            r"ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(?!IF\s+NOT\s+EXISTS)",
+            r"ALTER TABLE \1 ADD COLUMN IF NOT EXISTS ",
+            s,
+            flags=re.IGNORECASE,
+        )
+
+        # Translate INSERT OR IGNORE INTO -> INSERT INTO ... ON CONFLICT DO NOTHING
+        has_insert_or_ignore = False
+        if re.search(r"INSERT\s+OR\s+IGNORE\s+INTO", s, flags=re.IGNORECASE):
+            has_insert_or_ignore = True
+            s = re.sub(r"INSERT\s+OR\s+IGNORE\s+INTO", "INSERT INTO", s, flags=re.IGNORECASE)
+            s = s.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING;"
+
+        # Translate ? parameter placeholders to %s
+        s = s.replace("?", "%s")
+
+        # Determine if we should append RETURNING id to capture lastrowid
+        upper_s = s.upper()
+        needs_returning = (
+            upper_s.startswith("INSERT INTO")
+            and not has_insert_or_ignore
+            and "ON CONFLICT" not in upper_s
+            and "RETURNING " not in upper_s
+        )
+        if needs_returning:
+            s = s.rstrip().rstrip(";") + " RETURNING id;"
+
+        return s, needs_returning
+
+    def execute(self, sql: str, params=None):
+        pg_sql, needs_returning = self._translate_sql(sql)
+        if pg_sql is None:
+            return self
+        self.raw_cur.execute(pg_sql, params or ())
+        if needs_returning:
+            row = self.raw_cur.fetchone()
+            if row and "id" in row:
+                self.lastrowid = row["id"]
+        return self
+
+    def fetchone(self):
+        row = self.raw_cur.fetchone()
+        return PgRow(row) if row is not None else None
+
+    def fetchall(self):
+        rows = self.raw_cur.fetchall()
+        return [PgRow(r) for r in rows]
+
+
+class PgConnectionWrapper:
+    def __init__(self, raw_conn):
+        self.raw_conn = raw_conn
+
+    def cursor(self):
+        return PgCursorWrapper(
+            self.raw_conn,
+            self.raw_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor),
+        )
+
+    def execute(self, sql: str, params=None):
+        cur = self.cursor()
+        cur.execute(sql, params)
+        return cur
+
+    def commit(self):
+        self.raw_conn.commit()
+
+    def close(self):
+        self.raw_conn.close()
 
 UZBEKISTAN_REGIONS = [
     {"id": "tashkent", "name": "Toshkent", "lat": 41.2995, "lon": 69.2401},
@@ -23,6 +159,15 @@ UZBEKISTAN_REGIONS = [
 
 
 def get_connection():
+    pg_url = (
+        os.environ.get("POSTGRES_URL_NON_POOLING")
+        or os.environ.get("POSTGRES_URL")
+        or os.environ.get("DATABASE_URL")
+    )
+    if pg_url and psycopg2 is not None:
+        raw_conn = psycopg2.connect(clean_pg_url(pg_url))
+        return PgConnectionWrapper(raw_conn)
+
     conn = sqlite3.connect(DB_PATH, timeout=15.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL;")
@@ -102,7 +247,8 @@ def init_db():
     ]:
         try:
             cur.execute(f"ALTER TABLE settings ADD COLUMN {col_name} {col_def};")
-        except sqlite3.OperationalError:
+            conn.commit()
+        except Exception:
             pass
 
     # 1b. Workshop Structural & Equipment Elements (Tal relslari, Talning o'zi, Meshalka, Vibrator, Taglik Stoykalar)
@@ -218,7 +364,7 @@ def init_db():
         wire_used_kg REAL NOT NULL DEFAULT 0,
         notes TEXT DEFAULT '',
         created_at TEXT,
-        FOREIGN KEY (mold_id) REFERENCES molds(id),
+        FOREIGN KEY (mold_id) REFERENCES molds(id) ON DELETE CASCADE,
         FOREIGN KEY (product_type_id) REFERENCES product_types(id)
     );
     """)
@@ -234,7 +380,7 @@ def init_db():
         repair_cost REAL NOT NULL DEFAULT 0,
         performed_by TEXT DEFAULT 'Usta',
         created_at TEXT,
-        FOREIGN KEY (mold_id) REFERENCES molds(id)
+        FOREIGN KEY (mold_id) REFERENCES molds(id) ON DELETE CASCADE
     );
     """)
 

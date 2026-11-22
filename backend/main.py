@@ -594,6 +594,8 @@ def delete_mold(mold_id: int):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("PRAGMA foreign_keys = OFF;")
+    cur.execute("DELETE FROM production_events WHERE mold_id = ?", (mold_id,))
+    cur.execute("DELETE FROM mold_repairs WHERE mold_id = ?", (mold_id,))
     cur.execute("DELETE FROM molds WHERE id = ?", (mold_id,))
     cur.execute("PRAGMA foreign_keys = ON;")
     conn.commit()
@@ -809,6 +811,8 @@ def clear_workshop_scene(keep_rails: bool = True):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("PRAGMA foreign_keys = OFF;")
+    cur.execute("DELETE FROM production_events;")
+    cur.execute("DELETE FROM mold_repairs;")
     cur.execute("DELETE FROM molds;")
     if keep_rails:
         cur.execute("DELETE FROM workshop_elements WHERE element_type != 'tal_rails';")
