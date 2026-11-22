@@ -1,0 +1,27 @@
+# Dependencies & Virtual Environments
+node_modules/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Build outputs
+dist/
+dist-ssr/
+*.local
+
+# SQLite runtime WAL/SHM files & DB
+*.db-shm
+*.db-wal
+backend/beton_erp.db
+
+# Large local media files (photos & raw videos)
+media/
+frontend/public/workshop-photo-*.jpg
+
+# Editor & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
