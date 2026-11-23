@@ -19,6 +19,9 @@ export const useErpStore = defineStore('erp', () => {
   const molds = ref([])
   const workshopElements = ref([])
   const dailyLogs = ref([])
+  const sizeBatches = ref([])
+  const workersSummary = ref([])
+  const sizeTotals = ref({})
   const orders = ref([])
   const sales = ref([])
   const missingSizes = ref([])
@@ -67,6 +70,7 @@ export const useErpStore = defineStore('erp', () => {
         moldsData,
         elementsData,
         logsData,
+        sizeBatchesData,
         ordersData,
         salesData,
         missingData,
@@ -79,6 +83,7 @@ export const useErpStore = defineStore('erp', () => {
         apiFetch('/api/molds'),
         apiFetch('/api/workshop-elements'),
         apiFetch('/api/daily-logs'),
+        apiFetch('/api/production/size-batches'),
         apiFetch('/api/orders'),
         apiFetch('/api/sales'),
         apiFetch('/api/missing-sizes'),
@@ -93,6 +98,9 @@ export const useErpStore = defineStore('erp', () => {
       molds.value = moldsData
       workshopElements.value = elementsData
       dailyLogs.value = logsData
+      sizeBatches.value = sizeBatchesData.batches || []
+      workersSummary.value = sizeBatchesData.workers_summary || []
+      sizeTotals.value = sizeBatchesData.size_totals || {}
       orders.value = ordersData
       sales.value = salesData
       missingSizes.value = missingData
@@ -302,6 +310,31 @@ export const useErpStore = defineStore('erp', () => {
     return res
   }
 
+  async function createSizeBatch(payload) {
+    const res = await apiFetch('/api/production/size-batches', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+    await fetchAll()
+    return res
+  }
+
+  async function updateSizeBatch(batchId, payload) {
+    const res = await apiFetch(`/api/production/size-batches/${batchId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    })
+    await fetchAll()
+    return res
+  }
+
+  async function deleteSizeBatch(batchId) {
+    await apiFetch(`/api/production/size-batches/${batchId}`, {
+      method: 'DELETE',
+    })
+    await fetchAll()
+  }
+
   async function createOrder(payload) {
     await apiFetch('/api/orders', {
       method: 'POST',
@@ -351,6 +384,9 @@ export const useErpStore = defineStore('erp', () => {
     molds,
     workshopElements,
     dailyLogs,
+    sizeBatches,
+    workersSummary,
+    sizeTotals,
     orders,
     sales,
     missingSizes,
@@ -373,6 +409,9 @@ export const useErpStore = defineStore('erp', () => {
     demoldBatch,
     castBatch,
     cyclicCast,
+    createSizeBatch,
+    updateSizeBatch,
+    deleteSizeBatch,
     createOrder,
     createSale,
     createMissingSize,

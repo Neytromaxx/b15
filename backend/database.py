@@ -2,6 +2,7 @@ import sqlite3
 import math
 import os
 import re
+import json
 from datetime import datetime, timedelta
 
 try:
@@ -498,6 +499,25 @@ def _init_db_tables():
     );
     """)
 
+    # 11. Daily Size Batches (Qolip identifikatsiya raqamisiz o'lcham bo'yicha quyilganlar va ishchilar tabeli)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS daily_size_batches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        work_date TEXT NOT NULL,
+        items_json TEXT NOT NULL DEFAULT '[]',
+        workers_json TEXT NOT NULL DEFAULT '[]',
+        total_qty INTEGER NOT NULL DEFAULT 0,
+        per_worker_wage REAL NOT NULL DEFAULT 0,
+        total_labor_cost REAL NOT NULL DEFAULT 0,
+        total_cement_kg REAL NOT NULL DEFAULT 0,
+        total_gravel_kg REAL NOT NULL DEFAULT 0,
+        total_wire_kg REAL NOT NULL DEFAULT 0,
+        total_concrete_m3 REAL NOT NULL DEFAULT 0,
+        notes TEXT DEFAULT '',
+        created_at TEXT
+    );
+    """)
+
     conn.commit()
     seed_initial_data(conn)
     sync_real_media_layout(conn)
@@ -633,6 +653,48 @@ def sync_real_media_layout(conn: sqlite3.Connection):
             'Eshikdan (0m) oxirgi shlakoblok devorgacha (16.5m) cho''zilgan 6 metr oraliqdagi ikki yon rels (X = -3.0m va X = +3.0m)'
         )
         """)
+        conn.commit()
+
+    # Seed the real 2026-11-23 daily unnumbered batch (50-lik: 1, 40-lik: 13, 30-lik, workers: Shuhratjon, Ahliddin, Kadirov @ 170,000 UZS each)
+    cur.execute("SELECT COUNT(*) as cnt FROM daily_size_batches")
+    if cur.fetchone()["cnt"] == 0:
+        items_seed = [
+            {"code": "A50", "name": "50-lik Beton Ariq (Lotok)", "quantity": 1},
+            {"code": "A40", "name": "40-lik Beton Ariq (Lotok)", "quantity": 13},
+            {"code": "A30", "name": "30-lik Beton Ariq (Lotok)", "quantity": 0},
+        ]
+        workers_seed = [
+            {"name": "Shuhratjon", "amount": 170000},
+            {"name": "Ahliddin", "amount": 170000},
+            {"name": "Kadirov", "amount": 170000},
+        ]
+        # 1 * A50 + 13 * A40 norms:
+        # A50: 38kg cement, 170kg gravel, 2.8kg wire, 0.145m3
+        # A40: 28kg cement, 125kg gravel, 2.1kg wire, 0.098m3
+        cem_kg = round(1 * 38.0 + 13 * 28.0, 1)
+        grv_kg = round(1 * 170.0 + 13 * 125.0, 1)
+        wir_kg = round(1 * 2.8 + 13 * 2.1, 2)
+        vol_m3 = round(1 * 0.145 + 13 * 0.098, 3)
+        cur.execute("""
+            INSERT INTO daily_size_batches (
+                work_date, items_json, workers_json, total_qty, per_worker_wage,
+                total_labor_cost, total_cement_kg, total_gravel_kg, total_wire_kg,
+                total_concrete_m3, notes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            "2026-11-23",
+            json.dumps(items_seed, ensure_ascii=False),
+            json.dumps(workers_seed, ensure_ascii=False),
+            14,
+            170000.0,
+            510000.0,
+            cem_kg,
+            grv_kg,
+            wir_kg,
+            vol_m3,
+            "50-lik: 1 dona, 40-lik: 13 ta (30-lik sonini tahrirlab qo'shish mumkin). Ishchilar: Shuhratjon, Ahliddin, Kadirov (3 kishiga 170,000 so'mdan = 510,000 so'm).",
+            datetime.now().isoformat(),
+        ))
         conn.commit()
 
 

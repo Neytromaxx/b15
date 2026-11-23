@@ -180,6 +180,187 @@ async function submitCyclicCast() {
   )
 }
 
+// ---------------- 2B. UNNUMBERED DAILY SIZE BATCH & WORKER PAYROLL (SHUHRATJON, AHLIDDIN, KADIROV) ----------------
+const editingSizeBatchId = ref(null)
+const showLegacyMoldProduction = ref(false)
+
+const sizeBatchForm = ref({
+  work_date: new Date().toISOString().slice(0, 10),
+  quantities: {
+    A50: 1,
+    A40: 13,
+    A30: 0,
+    A22: 0,
+    K104: 0,
+    PL80: 0,
+  },
+  uniform_wage: 170000,
+  workers: [
+    { name: 'Shuhratjon', amount: 170000, active: true },
+    { name: 'Ahliddin', amount: 170000, active: true },
+    { name: 'Kadirov', amount: 170000, active: true },
+  ],
+  new_worker_name: '',
+  notes: '',
+})
+
+const sizeCatalogMeta = [
+  { code: 'A50', shortLabel: '50-lik Ariq', badge: 'bg-purple-500/20 text-purple-300 border-purple-500/40' },
+  { code: 'A40', shortLabel: '40-lik Ariq', badge: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40' },
+  { code: 'A30', shortLabel: '30-lik Ariq', badge: 'bg-blue-500/20 text-blue-300 border-blue-500/40' },
+  { code: 'A22', shortLabel: '22-lik Ariq', badge: 'bg-sky-500/20 text-sky-300 border-sky-500/40' },
+  { code: 'K104', shortLabel: 'Kolodets Ø118/104', badge: 'bg-amber-500/20 text-amber-300 border-amber-500/40' },
+  { code: 'PL80', shortLabel: 'Vibrostol Plita', badge: 'bg-teal-500/20 text-teal-300 border-teal-500/40' },
+]
+
+function applyUniformWageToAll() {
+  const w = Number(sizeBatchForm.value.uniform_wage || 0)
+  for (const worker of sizeBatchForm.value.workers) {
+    if (worker.active) {
+      worker.amount = w
+    }
+  }
+}
+
+function addNewWorkerToForm() {
+  const nm = (sizeBatchForm.value.new_worker_name || '').trim()
+  if (!nm) return
+  if (!sizeBatchForm.value.workers.some((w) => w.name.toLowerCase() === nm.toLowerCase())) {
+    sizeBatchForm.value.workers.push({
+      name: nm,
+      amount: Number(sizeBatchForm.value.uniform_wage || 170000),
+      active: true,
+    })
+  }
+  sizeBatchForm.value.new_worker_name = ''
+}
+
+const sizeBatchPreview = computed(() => {
+  let totalQty = 0
+  let totalCem = 0
+  let totalGrv = 0
+  let totalWir = 0
+  let totalVol = 0
+
+  for (const meta of sizeCatalogMeta) {
+    const q = Math.max(0, Number(sizeBatchForm.value.quantities[meta.code] || 0))
+    if (q > 0) {
+      totalQty += q
+      const prod = store.products.find((p) => p.code === meta.code)
+      if (prod) {
+        totalCem += Number(prod.cement_norm_kg || 0) * q
+        totalGrv += Number(prod.gravel_norm_kg || 0) * q
+        totalWir += Number(prod.wire_norm_kg || 0) * q
+        totalVol += Number(prod.concrete_volume_m3 || 0) * q
+      }
+    }
+  }
+
+  const activeWorkers = sizeBatchForm.value.workers.filter((w) => w.active && w.name.trim())
+  const totalLabor = activeWorkers.reduce((acc, w) => acc + Number(w.amount || 0), 0)
+
+  return {
+    totalQty,
+    activeWorkersCount: activeWorkers.length,
+    totalLabor,
+    totalCem: totalCem.toFixed(1),
+    totalGrv: totalGrv.toFixed(1),
+    totalWir: totalWir.toFixed(2),
+    totalVol: totalVol.toFixed(3),
+  }
+})
+
+function loadSizeBatchForEdit(batch) {
+  editingSizeBatchId.value = batch.id
+  const qMap = { A50: 0, A40: 0, A30: 0, A22: 0, K104: 0, PL80: 0 }
+  for (const it of batch.items || []) {
+    if (it.code in qMap) {
+      qMap[it.code] = Number(it.quantity || 0)
+    }
+  }
+
+  const existingWorkers = (batch.workers || []).map((w) => ({
+    name: w.name,
+    amount: Number(w.amount || 0),
+    active: true,
+  }))
+  for (const defaultName of ['Shuhratjon', 'Ahliddin', 'Kadirov']) {
+    if (!existingWorkers.some((w) => w.name.toLowerCase() === defaultName.toLowerCase())) {
+      existingWorkers.push({
+        name: defaultName,
+        amount: Number(batch.per_worker_wage || 170000),
+        active: false,
+      })
+    }
+  }
+
+  sizeBatchForm.value = {
+    work_date: batch.work_date || new Date().toISOString().slice(0, 10),
+    quantities: qMap,
+    uniform_wage: Number(batch.per_worker_wage || 170000),
+    workers: existingWorkers,
+    new_worker_name: '',
+    notes: batch.notes || '',
+  }
+}
+
+function resetSizeBatchForm() {
+  editingSizeBatchId.value = null
+  sizeBatchForm.value = {
+    work_date: new Date().toISOString().slice(0, 10),
+    quantities: { A50: 0, A40: 0, A30: 0, A22: 0, K104: 0, PL80: 0 },
+    uniform_wage: 170000,
+    workers: [
+      { name: 'Shuhratjon', amount: 170000, active: true },
+      { name: 'Ahliddin', amount: 170000, active: true },
+      { name: 'Kadirov', amount: 170000, active: true },
+    ],
+    new_worker_name: '',
+    notes: '',
+  }
+}
+
+async function submitSizeBatch() {
+  const items = sizeCatalogMeta.map((m) => ({
+    code: m.code,
+    quantity: Math.max(0, Number(sizeBatchForm.value.quantities[m.code] || 0)),
+  }))
+  const workers = sizeBatchForm.value.workers
+    .filter((w) => w.active && w.name.trim())
+    .map((w) => ({
+      name: w.name.trim(),
+      amount: Number(w.amount || 0),
+    }))
+
+  const payload = {
+    work_date: sizeBatchForm.value.work_date,
+    items,
+    workers,
+    notes: sizeBatchForm.value.notes,
+  }
+
+  if (editingSizeBatchId.value) {
+    const res = await store.updateSizeBatch(editingSizeBatchId.value, payload)
+    showToast(
+      `Kunlik yozuv (#${editingSizeBatchId.value}) yangilandi! Jami: ${res.total_qty} dona, Ish haqi: ${formatMoney(res.total_labor_cost)}`
+    )
+    editingSizeBatchId.value = null
+  } else {
+    const res = await store.createSizeBatch(payload)
+    showToast(
+      `Saqlandi! Jami: ${res.total_qty} dona quyildi, ${workers.length} ta ishchiga jami ${formatMoney(res.total_labor_cost)} yozildi!`
+    )
+  }
+}
+
+async function handleDeleteSizeBatch(batchId) {
+  await store.deleteSizeBatch(batchId)
+  if (editingSizeBatchId.value === batchId) {
+    editingSizeBatchId.value = null
+  }
+  showToast("Kunlik quyish yozuvi o'chirildi.")
+}
+
 // ---------------- 3. PRODUCTS & 3D CATALOG ----------------
 const activePreviewProduct = ref(null)
 watch(
@@ -817,9 +998,316 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- ==================== TAB 2: DAILY PRODUCTION (DEMOLD, CAST, CYCLIC KOLODETS) ==================== -->
+      <!-- ==================== TAB 2: DAILY PRODUCTION (UNNUMBERED BY SIZE + WORKERS PAYROLL) ==================== -->
       <div v-if="activeTab === 'production'" class="space-y-6">
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- NEW PRIMARY SECTION: UNNUMBERED DAILY CASTING BY SIZE & WORKER PAYROLL -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          <!-- Left 7 Cols: Size Quantities & Workers Form -->
+          <div class="lg:col-span-7 bg-slate-900 border border-blue-500/40 rounded-2xl p-5 space-y-4 shadow-xl">
+            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
+              <div>
+                <span class="px-2.5 py-1 rounded-lg bg-blue-500/20 text-blue-300 text-xs font-bold border border-blue-500/30">
+                  {{ editingSizeBatchId ? `✏️ Yozuvni Tahrirlash (#${editingSizeBatchId})` : "⚡ Qolip Raqamisiz Kunlik Quyish va Ishchilar Tabeli" }}
+                </span>
+                <h2 class="text-base font-black text-white mt-1.5">
+                  Qaysi O'lchamdan Nechta Quyilgani va Ishchilar Ish Haqi
+                </h2>
+              </div>
+              <div class="flex items-center gap-2">
+                <label class="text-xs text-slate-400 font-semibold">Sana:</label>
+                <input
+                  v-model="sizeBatchForm.work_date"
+                  type="date"
+                  class="bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs font-bold text-white"
+                />
+              </div>
+            </div>
+
+            <!-- 1. Product Sizes Quantities Grid -->
+            <div>
+              <div class="text-xs font-bold text-slate-300 mb-2 flex items-center justify-between">
+                <span>1. Quyilgan mahsulotlar soni (qolip raqamisiz, o'lcham bo'yicha):</span>
+                <span class="text-blue-400">Jami: {{ sizeBatchPreview.totalQty }} dona</span>
+              </div>
+              <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <div
+                  v-for="meta in sizeCatalogMeta"
+                  :key="meta.code"
+                  :class="Number(sizeBatchForm.quantities[meta.code] || 0) > 0 ? 'border-blue-500 bg-blue-950/25' : 'border-slate-800 bg-slate-950'"
+                  class="rounded-xl border p-3 transition space-y-2"
+                >
+                  <div class="flex items-center justify-between">
+                    <span :class="meta.badge" class="px-2 py-0.5 rounded border text-[11px] font-bold">
+                      {{ meta.code }}
+                    </span>
+                    <span class="text-xs font-bold text-white">{{ meta.shortLabel }}</span>
+                  </div>
+                  <div class="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      @click="sizeBatchForm.quantities[meta.code] = Math.max(0, Number(sizeBatchForm.quantities[meta.code] || 0) - 1)"
+                      class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm cursor-pointer"
+                    >
+                      -
+                    </button>
+                    <input
+                      v-model.number="sizeBatchForm.quantities[meta.code]"
+                      type="number"
+                      min="0"
+                      class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-center text-sm font-black text-white"
+                    />
+                    <button
+                      type="button"
+                      @click="sizeBatchForm.quantities[meta.code] = Number(sizeBatchForm.quantities[meta.code] || 0) + 1"
+                      class="w-8 h-8 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm cursor-pointer"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 2. Workers & Wages Section (Shuhratjon, Ahliddin, Kadirov) -->
+            <div class="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-3">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div class="text-xs font-bold text-amber-300">
+                    👷 2. Ishlagan Ishchilar va Kunlik Yozilgan Summasi
+                  </div>
+                  <div class="text-[11px] text-slate-400">
+                    Har bir ishchiga bir xil yoki alohida summa yozish mumkin
+                  </div>
+                </div>
+                <div class="flex items-center gap-1.5">
+                  <span class="text-[11px] text-slate-400">Kishi boshiga:</span>
+                  <input
+                    v-model.number="sizeBatchForm.uniform_wage"
+                    @input="applyUniformWageToAll"
+                    type="number"
+                    step="5000"
+                    class="w-28 bg-slate-900 border border-amber-500/50 rounded-lg px-2.5 py-1 text-xs font-bold text-amber-300"
+                  />
+                  <button
+                    type="button"
+                    @click="applyUniformWageToAll"
+                    class="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500 hover:text-slate-950 text-amber-300 text-[11px] font-bold border border-amber-500/40 transition cursor-pointer"
+                  >
+                    Barchasiga
+                  </button>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div
+                  v-for="(w, idx) in sizeBatchForm.workers"
+                  :key="idx"
+                  :class="w.active ? 'border-amber-500/50 bg-slate-900' : 'border-slate-800 bg-slate-900/40 opacity-60'"
+                  class="rounded-xl border p-2.5 space-y-1.5"
+                >
+                  <label class="flex items-center justify-between cursor-pointer">
+                    <span class="flex items-center gap-2">
+                      <input type="checkbox" v-model="w.active" class="w-4 h-4 accent-amber-500 rounded" />
+                      <span class="text-xs font-bold text-white">{{ w.name }}</span>
+                    </span>
+                    <span v-if="w.active" class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-semibold">
+                      Ishladi
+                    </span>
+                  </label>
+                  <div v-if="w.active" class="flex items-center gap-1">
+                    <input
+                      v-model.number="w.amount"
+                      type="number"
+                      step="5000"
+                      class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-xs font-bold text-amber-300"
+                    />
+                    <span class="text-[10px] text-slate-400">so'm</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Add extra worker input -->
+              <div class="flex items-center gap-2 pt-1">
+                <input
+                  v-model="sizeBatchForm.new_worker_name"
+                  @keyup.enter="addNewWorkerToForm"
+                  type="text"
+                  placeholder="+ Yangi ishchi ismi (masalan: Usta...)"
+                  class="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white"
+                />
+                <button
+                  type="button"
+                  @click="addNewWorkerToForm"
+                  class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 border border-slate-700 cursor-pointer"
+                >
+                  + Ishchi Qo'shish
+                </button>
+              </div>
+            </div>
+
+            <!-- 3. Auto Calculated Norms & Notes -->
+            <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 bg-slate-950 border border-slate-800 rounded-xl p-3 text-center text-xs">
+              <div>
+                <div class="text-[10px] text-slate-400">Jami Quyilgan</div>
+                <div class="font-black text-blue-400 text-sm">{{ sizeBatchPreview.totalQty }} dona</div>
+              </div>
+              <div>
+                <div class="text-[10px] text-slate-400">Jami Ish Haqi ({{ sizeBatchPreview.activeWorkersCount }} kishi)</div>
+                <div class="font-black text-amber-400 text-sm">{{ formatMoney(sizeBatchPreview.totalLabor) }}</div>
+              </div>
+              <div>
+                <div class="text-[10px] text-slate-400">Sement sarfi</div>
+                <div class="font-bold text-white">{{ sizeBatchPreview.totalCem }} kg</div>
+              </div>
+              <div>
+                <div class="text-[10px] text-slate-400">Shag'al sarfi</div>
+                <div class="font-bold text-white">{{ sizeBatchPreview.totalGrv }} kg</div>
+              </div>
+              <div>
+                <div class="text-[10px] text-slate-400">Beton / Sim</div>
+                <div class="font-bold text-sky-300">{{ sizeBatchPreview.totalVol }} m³ / {{ sizeBatchPreview.totalWir }} kg</div>
+              </div>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+              <input
+                v-model="sizeBatchForm.notes"
+                type="text"
+                placeholder="Qo'shimcha izoh (ixtiyoriy)..."
+                class="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-white"
+              />
+              <button
+                v-if="editingSizeBatchId"
+                type="button"
+                @click="resetSizeBatchForm"
+                class="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 cursor-pointer"
+              >
+                Bekor qilish
+              </button>
+              <button
+                type="button"
+                @click="submitSizeBatch"
+                class="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-black text-xs shadow-lg shadow-blue-600/25 transition cursor-pointer"
+              >
+                {{ editingSizeBatchId ? "✓ O'zgarishlarni Saqlash" : "✓ Kunlik Quyish va Ish Haqini Saqlash" }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Right 5 Cols: Workers Earnings Summary & Unnumbered Batches History -->
+          <div class="lg:col-span-5 space-y-4">
+            <!-- Workers Payroll Summary Card -->
+            <div class="bg-slate-900 border border-amber-500/30 rounded-2xl p-5 space-y-3">
+              <div class="flex items-center justify-between">
+                <span class="px-2.5 py-1 rounded-lg bg-amber-500/20 text-amber-300 text-xs font-bold">
+                  👷 Ishchilar Hisob-Kitobi (Tabel)
+                </span>
+                <span class="text-xs text-slate-400">
+                  Jami: {{ formatMoney(store.workersSummary.reduce((a, b) => a + Number(b.total_earned || 0), 0)) }}
+                </span>
+              </div>
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div
+                  v-for="ws in store.workersSummary"
+                  :key="ws.name"
+                  class="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-1"
+                >
+                  <div class="text-sm font-black text-white">{{ ws.name }}</div>
+                  <div class="text-xs font-bold text-amber-400">{{ formatMoney(ws.total_earned) }}</div>
+                  <div class="text-[11px] text-slate-400">
+                    {{ ws.days_count }} smena • Oxirgi: {{ ws.last_work_date }}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Recent Unnumbered Size Batches List (With 1-Click Edit!) -->
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+              <div class="flex items-center justify-between">
+                <h3 class="text-sm font-bold text-white">
+                  📋 Kunlik Quyilganlar Tarixi (O'lcham va Ishchilar bo'yicha)
+                </h3>
+                <span class="text-xs text-slate-400">{{ store.sizeBatches.length }} ta yozuv</span>
+              </div>
+
+              <div class="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+                <div
+                  v-for="b in store.sizeBatches"
+                  :key="b.id"
+                  :class="editingSizeBatchId === b.id ? 'border-blue-500 bg-blue-950/20' : 'border-slate-800 bg-slate-950'"
+                  class="rounded-xl border p-3.5 space-y-2.5 transition"
+                >
+                  <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                      <span class="text-xs font-black text-white bg-slate-800 px-2.5 py-1 rounded-lg">
+                        📅 {{ b.work_date }}
+                      </span>
+                      <span class="text-xs font-bold text-blue-400">
+                        Jami: {{ b.total_qty }} dona
+                      </span>
+                    </div>
+                    <div class="flex items-center gap-1.5">
+                      <button
+                        @click="loadSizeBatchForEdit(b)"
+                        class="px-2.5 py-1 rounded-lg bg-blue-600/20 hover:bg-blue-600 text-blue-300 hover:text-white border border-blue-500/40 text-[11px] font-bold transition cursor-pointer"
+                      >
+                        ✏️ Tahrirlash
+                      </button>
+                      <button
+                        @click="handleDeleteSizeBatch(b.id)"
+                        class="px-2 py-1 rounded-lg bg-red-500/15 hover:bg-red-600 text-red-300 hover:text-white border border-red-500/30 text-[11px] font-bold transition cursor-pointer"
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- Cast items badges -->
+                  <div class="flex flex-wrap gap-1.5">
+                    <span
+                      v-for="it in (b.items || []).filter((x) => Number(x.quantity || 0) > 0)"
+                      :key="it.code"
+                      class="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-700 text-xs font-bold text-white"
+                    >
+                      {{ it.name }}: <strong class="text-sky-400">{{ it.quantity }} dona</strong>
+                    </span>
+                  </div>
+
+                  <!-- Workers badges -->
+                  <div class="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-800/80 text-xs">
+                    <div class="flex flex-wrap gap-1.5">
+                      <span
+                        v-for="w in b.workers || []"
+                        :key="w.name"
+                        class="px-2 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-200 text-[11px] font-semibold"
+                      >
+                        👷 {{ w.name }}: {{ formatMoney(w.amount) }}
+                      </span>
+                    </div>
+                    <div class="font-black text-amber-400">
+                      Jami: {{ formatMoney(b.total_labor_cost) }}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Toggle for Legacy Numbered-Mold Production Panels -->
+        <div class="flex items-center justify-between bg-slate-900/70 border border-slate-800 rounded-xl px-4 py-2.5">
+          <span class="text-xs text-slate-400">
+            Raqamlangan qoliplar (#01, #02...) bo'yicha birma-bir quyish va yechish bo'limi
+          </span>
+          <button
+            @click="showLegacyMoldProduction = !showLegacyMoldProduction"
+            class="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-300 border border-slate-700 cursor-pointer"
+          >
+            {{ showLegacyMoldProduction ? "▲ Raqamlangan qoliplar bo'limini yashirish" : "▼ Raqamlangan qoliplar bo'limini ko'rsatish" }}
+          </button>
+        </div>
+
+        <div v-if="showLegacyMoldProduction" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <!-- Column 1: Demolding (Qolipdan chiqarish va beton holatini tekshirish) -->
           <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between">
             <div class="space-y-3">

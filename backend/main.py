@@ -180,6 +180,23 @@ class CyclicCastRequest(BaseModel):
     notes: str = ""
 
 
+class SizeBatchItem(BaseModel):
+    code: str
+    quantity: int = 0
+
+
+class WorkerWageItem(BaseModel):
+    name: str
+    amount: float = 170000.0
+
+
+class DailySizeBatchCreate(BaseModel):
+    work_date: Optional[str] = None
+    items: List[SizeBatchItem]
+    workers: List[WorkerWageItem]
+    notes: str = ""
+
+
 class OrderCreate(BaseModel):
     customer_name: str
     customer_phone: str = ""
@@ -1248,6 +1265,252 @@ def cast_cyclic_mold(payload: CyclicCastRequest):
     }
 
 
+@app.get("/api/production/size-batches")
+def list_daily_size_batches():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM daily_size_batches ORDER BY work_date DESC, id DESC")
+    rows = [dict(r) for r in cur.fetchall()]
+
+    worker_map = {}
+    size_totals = {}
+
+    for r in rows:
+        try:
+            r["items"] = json.loads(r.get("items_json") or "[]")
+        except Exception:
+            r["items"] = []
+        try:
+            r["workers"] = json.loads(r.get("workers_json") or "[]")
+        except Exception:
+            r["workers"] = []
+
+        for it in r["items"]:
+            c = it.get("code", "")
+            q = int(it.get("quantity") or 0)
+            if c and q > 0:
+                size_totals[c] = size_totals.get(c, 0) + q
+
+        for w in r["workers"]:
+            w_name = (w.get("name") or "").strip()
+            w_amt = float(w.get("amount") or 0)
+            if not w_name:
+                continue
+            if w_name not in worker_map:
+                worker_map[w_name] = {
+                    "name": w_name,
+                    "days_count": 0,
+                    "total_earned": 0.0,
+                    "last_work_date": r["work_date"],
+                }
+            worker_map[w_name]["days_count"] += 1
+            worker_map[w_name]["total_earned"] += w_amt
+
+    conn.close()
+    return {
+        "batches": rows,
+        "workers_summary": list(worker_map.values()),
+        "size_totals": size_totals,
+    }
+
+
+def _compute_batch_metrics(cur, items: List[SizeBatchItem], workers: List[WorkerWageItem]):
+    cur.execute("SELECT * FROM product_types")
+    prod_by_code = {p["code"]: dict(p) for p in cur.fetchall()}
+
+    normalized_items = []
+    total_qty = 0
+    total_cem = 0.0
+    total_grv = 0.0
+    total_wir = 0.0
+    total_vol = 0.0
+
+    for it in items:
+        qty = max(0, int(it.quantity or 0))
+        prod = prod_by_code.get(it.code)
+        p_name = prod["name"] if prod else f"{it.code} o'lcham"
+        normalized_items.append({
+            "code": it.code,
+            "name": p_name,
+            "quantity": qty,
+        })
+        if qty > 0 and prod:
+            total_qty += qty
+            total_cem += float(prod.get("cement_norm_kg") or 0) * qty
+            total_grv += float(prod.get("gravel_norm_kg") or 0) * qty
+            total_wir += float(prod.get("wire_norm_kg") or 0) * qty
+            total_vol += float(prod.get("concrete_volume_m3") or 0) * qty
+
+    normalized_workers = []
+    total_labor = 0.0
+    for w in workers:
+        nm = (w.name or "").strip()
+        if not nm:
+            continue
+        amt = float(w.amount or 0)
+        normalized_workers.append({"name": nm, "amount": amt})
+        total_labor += amt
+
+    per_worker = normalized_workers[0]["amount"] if normalized_workers else 0.0
+    return {
+        "items": normalized_items,
+        "workers": normalized_workers,
+        "total_qty": total_qty,
+        "per_worker_wage": per_worker,
+        "total_labor_cost": round(total_labor, 2),
+        "total_cement_kg": round(total_cem, 1),
+        "total_gravel_kg": round(total_grv, 1),
+        "total_wire_kg": round(total_wir, 2),
+        "total_concrete_m3": round(total_vol, 3),
+    }
+
+
+@app.post("/api/production/size-batches")
+def create_daily_size_batch(payload: DailySizeBatchCreate):
+    work_date = payload.work_date or datetime.now().strftime("%Y-%m-%d")
+    conn = get_connection()
+    ensure_daily_log(conn, work_date)
+    cur = conn.cursor()
+
+    m = _compute_batch_metrics(cur, payload.items, payload.workers)
+
+    # Update product stock quantities
+    for it in m["items"]:
+        if it["quantity"] > 0:
+            cur.execute(
+                "UPDATE product_types SET stock_qty = stock_qty + ? WHERE code = ?",
+                (it["quantity"], it["code"]),
+            )
+
+    # Deduct raw materials
+    if m["total_cement_kg"] > 0 or m["total_gravel_kg"] > 0 or m["total_wire_kg"] > 0:
+        deduct_raw_materials(conn, m["total_cement_kg"], m["total_gravel_kg"], m["total_wire_kg"], work_date)
+
+    # Build auto summary note if none provided
+    parts_str = ", ".join(f"{it['code']}: {it['quantity']} ta" for it in m["items"] if it["quantity"] > 0)
+    workers_str = ", ".join(f"{w['name']} ({int(w['amount']):,} so'm)" for w in m["workers"])
+    auto_note = payload.notes.strip() or f"Quyilgan: {parts_str}. Ishchilar: {workers_str}"
+
+    cur.execute("""
+        INSERT INTO daily_size_batches (
+            work_date, items_json, workers_json, total_qty, per_worker_wage,
+            total_labor_cost, total_cement_kg, total_gravel_kg, total_wire_kg,
+            total_concrete_m3, notes, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        work_date,
+        json.dumps(m["items"], ensure_ascii=False),
+        json.dumps(m["workers"], ensure_ascii=False),
+        m["total_qty"],
+        m["per_worker_wage"],
+        m["total_labor_cost"],
+        m["total_cement_kg"],
+        m["total_gravel_kg"],
+        m["total_wire_kg"],
+        m["total_concrete_m3"],
+        auto_note,
+        datetime.now().isoformat(),
+    ))
+    new_id = cur.lastrowid
+
+    cur.execute("""
+        UPDATE daily_logs
+        SET cast_count = cast_count + ?,
+            labor_cost_total = labor_cost_total + ?,
+            notes = CASE WHEN notes = '' OR notes IS NULL THEN ? ELSE notes || ' | ' || ? END
+        WHERE work_date = ?
+    """, (m["total_qty"], m["total_labor_cost"], auto_note, auto_note, work_date))
+
+    conn.commit()
+    conn.close()
+    return {"id": new_id, **m}
+
+
+@app.put("/api/production/size-batches/{batch_id}")
+def update_daily_size_batch(batch_id: int, payload: DailySizeBatchCreate):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM daily_size_batches WHERE id = ?", (batch_id,))
+    existing = cur.fetchone()
+    if not existing:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Kunlik yozuv topilmadi")
+    existing = dict(existing)
+
+    work_date = payload.work_date or existing["work_date"]
+    ensure_daily_log(conn, work_date)
+
+    old_items = json.loads(existing.get("items_json") or "[]")
+    old_qty_by_code = {it["code"]: int(it.get("quantity") or 0) for it in old_items}
+
+    m = _compute_batch_metrics(cur, payload.items, payload.workers)
+    new_qty_by_code = {it["code"]: int(it.get("quantity") or 0) for it in m["items"]}
+
+    # Apply stock deltas
+    all_codes = set(old_qty_by_code.keys()) | set(new_qty_by_code.keys())
+    for code in all_codes:
+        delta = new_qty_by_code.get(code, 0) - old_qty_by_code.get(code, 0)
+        if delta != 0:
+            cur.execute(
+                "UPDATE product_types SET stock_qty = GREATEST(0, stock_qty + ?) WHERE code = ?"
+                if os.environ.get("POSTGRES_URL") or os.environ.get("DATABASE_URL")
+                else "UPDATE product_types SET stock_qty = MAX(0, stock_qty + ?) WHERE code = ?",
+                (delta, code),
+            )
+
+    parts_str = ", ".join(f"{it['code']}: {it['quantity']} ta" for it in m["items"] if it["quantity"] > 0)
+    workers_str = ", ".join(f"{w['name']} ({int(w['amount']):,} so'm)" for w in m["workers"])
+    auto_note = payload.notes.strip() or f"Quyilgan: {parts_str}. Ishchilar: {workers_str}"
+
+    cur.execute("""
+        UPDATE daily_size_batches
+        SET work_date = ?, items_json = ?, workers_json = ?, total_qty = ?,
+            per_worker_wage = ?, total_labor_cost = ?, total_cement_kg = ?,
+            total_gravel_kg = ?, total_wire_kg = ?, total_concrete_m3 = ?, notes = ?
+        WHERE id = ?
+    """, (
+        work_date,
+        json.dumps(m["items"], ensure_ascii=False),
+        json.dumps(m["workers"], ensure_ascii=False),
+        m["total_qty"],
+        m["per_worker_wage"],
+        m["total_labor_cost"],
+        m["total_cement_kg"],
+        m["total_gravel_kg"],
+        m["total_wire_kg"],
+        m["total_concrete_m3"],
+        auto_note,
+        batch_id,
+    ))
+
+    qty_delta = m["total_qty"] - int(existing.get("total_qty") or 0)
+    labor_delta = m["total_labor_cost"] - float(existing.get("total_labor_cost") or 0)
+    cur.execute("""
+        UPDATE daily_logs
+        SET cast_count = cast_count + ?,
+            labor_cost_total = labor_cost_total + ?
+        WHERE work_date = ?
+    """, (qty_delta, labor_delta, work_date))
+
+    conn.commit()
+    conn.close()
+    return {"id": batch_id, **m}
+
+
+@app.delete("/api/production/size-batches/{batch_id}")
+def delete_daily_size_batch(batch_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM daily_size_batches WHERE id = ?", (batch_id,))
+    existing = cur.fetchone()
+    if existing:
+        existing = dict(existing)
+        cur.execute("DELETE FROM daily_size_batches WHERE id = ?", (batch_id,))
+        conn.commit()
+    conn.close()
+    return {"status": "deleted", "id": batch_id}
+
+
 @app.get("/api/daily-logs")
 def list_daily_logs():
     conn = get_connection()
@@ -1497,7 +1760,10 @@ def get_dashboard_analytics():
     mat_cost = cur.fetchone()["mat_cost"]
 
     cur.execute("SELECT COALESCE(SUM(labor_cost_total), 0) as labor_cost FROM daily_logs")
-    labor_cost = cur.fetchone()["labor_cost"]
+    logs_labor = float(cur.fetchone()["labor_cost"] or 0)
+    cur.execute("SELECT COALESCE(SUM(total_labor_cost), 0) as sb_labor FROM daily_size_batches")
+    sb_labor = float(cur.fetchone()["sb_labor"] or 0)
+    labor_cost = max(logs_labor, sb_labor)
 
     cur.execute("SELECT COALESCE(SUM(repair_cost), 0) as rep_cost FROM mold_repairs")
     repair_cost = cur.fetchone()["rep_cost"]
