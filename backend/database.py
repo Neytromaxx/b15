@@ -655,26 +655,27 @@ def sync_real_media_layout(conn: sqlite3.Connection):
         """)
         conn.commit()
 
-    # Seed the real 2026-11-23 daily unnumbered batch (50-lik: 1, 40-lik: 13, 30-lik, workers: Shuhratjon, Ahliddin, Kadirov @ 170,000 UZS each)
+    # Seed the real 2026-11-23 daily unnumbered batch (50-lik: 1, 40-lik: 13, 30-lik: 16, workers: Shuhratjon, Ahliddin, Kadirov @ 170,000 UZS each)
     cur.execute("SELECT COUNT(*) as cnt FROM daily_size_batches")
     if cur.fetchone()["cnt"] == 0:
         items_seed = [
             {"code": "A50", "name": "50-lik Beton Ariq (Lotok)", "quantity": 1},
             {"code": "A40", "name": "40-lik Beton Ariq (Lotok)", "quantity": 13},
-            {"code": "A30", "name": "30-lik Beton Ariq (Lotok)", "quantity": 0},
+            {"code": "A30", "name": "30-lik Beton Ariq (Lotok)", "quantity": 16},
         ]
         workers_seed = [
             {"name": "Shuhratjon", "amount": 170000},
             {"name": "Ahliddin", "amount": 170000},
             {"name": "Kadirov", "amount": 170000},
         ]
-        # 1 * A50 + 13 * A40 norms:
+        # 1 * A50 + 13 * A40 + 16 * A30 norms:
         # A50: 38kg cement, 170kg gravel, 2.8kg wire, 0.145m3
         # A40: 28kg cement, 125kg gravel, 2.1kg wire, 0.098m3
-        cem_kg = round(1 * 38.0 + 13 * 28.0, 1)
-        grv_kg = round(1 * 170.0 + 13 * 125.0, 1)
-        wir_kg = round(1 * 2.8 + 13 * 2.1, 2)
-        vol_m3 = round(1 * 0.145 + 13 * 0.098, 3)
+        # A30: 20kg cement, 88kg gravel, 1.4kg wire, 0.066m3
+        cem_kg = round(1 * 38.0 + 13 * 28.0 + 16 * 20.0, 1)
+        grv_kg = round(1 * 170.0 + 13 * 125.0 + 16 * 88.0, 1)
+        wir_kg = round(1 * 2.8 + 13 * 2.1 + 16 * 1.4, 2)
+        vol_m3 = round(1 * 0.145 + 13 * 0.098 + 16 * 0.066, 3)
         cur.execute("""
             INSERT INTO daily_size_batches (
                 work_date, items_json, workers_json, total_qty, per_worker_wage,
@@ -685,14 +686,14 @@ def sync_real_media_layout(conn: sqlite3.Connection):
             "2026-11-23",
             json.dumps(items_seed, ensure_ascii=False),
             json.dumps(workers_seed, ensure_ascii=False),
-            14,
+            30,
             170000.0,
             510000.0,
             cem_kg,
             grv_kg,
             wir_kg,
             vol_m3,
-            "50-lik: 1 dona, 40-lik: 13 ta (30-lik sonini tahrirlab qo'shish mumkin). Ishchilar: Shuhratjon, Ahliddin, Kadirov (3 kishiga 170,000 so'mdan = 510,000 so'm).",
+            "50-lik: 1 dona, 40-lik: 13 ta, 30-lik: 16 ta (Jami 30 dona). Ishchilar: Shuhratjon, Ahliddin, Kadirov (3 kishiga 170,000 so'mdan = 510,000 so'm).",
             datetime.now().isoformat(),
         ))
         conn.commit()

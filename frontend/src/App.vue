@@ -189,7 +189,7 @@ const sizeBatchForm = ref({
   quantities: {
     A50: 1,
     A40: 13,
-    A30: 0,
+    A30: 16,
     A22: 0,
     K104: 0,
     PL80: 0,
