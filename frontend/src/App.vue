@@ -188,10 +188,10 @@ const sizeBatchForm = ref({
   work_date: new Date().toISOString().slice(0, 10),
   quantities: {
     A50: 1,
-    A40: 13,
-    A30: 16,
-    A22: 0,
-    K104: 0,
+    A40: 5,
+    A30: 0,
+    A22: 12,
+    K104: 7,
     PL80: 0,
   },
   uniform_wage: 180000,
@@ -265,6 +265,8 @@ const sizeBatchPreview = computed(() => {
     totalLabor,
     totalCem: totalCem.toFixed(1),
     totalGrv: totalGrv.toFixed(1),
+    fineGrv: (totalGrv * 0.75).toFixed(1),
+    coarseGrv: (totalGrv * 0.25).toFixed(1),
     totalWir: totalWir.toFixed(2),
     totalVol: totalVol.toFixed(3),
   }
@@ -1160,8 +1162,11 @@ onMounted(() => {
                 <div class="font-bold text-white">{{ sizeBatchPreview.totalCem }} kg</div>
               </div>
               <div>
-                <div class="text-[10px] text-slate-400">Shag'al sarfi</div>
+                <div class="text-[10px] text-slate-400">Shag'al (3:1 nisbat)</div>
                 <div class="font-bold text-white">{{ sizeBatchPreview.totalGrv }} kg</div>
+                <div class="text-[10px] text-emerald-400">
+                  Mayda: {{ sizeBatchPreview.fineGrv }} • Yirik: {{ sizeBatchPreview.coarseGrv }} kg
+                </div>
               </div>
               <div>
                 <div class="text-[10px] text-slate-400">Beton / Sim</div>
@@ -1271,6 +1276,20 @@ onMounted(() => {
                     >
                       {{ it.name }}: <strong class="text-sky-400">{{ it.quantity }} dona</strong>
                     </span>
+                  </div>
+
+                  <!-- Material & Gravel 3:1 Breakdown Row -->
+                  <div class="flex flex-wrap items-center gap-2 text-[11px] text-slate-300 bg-slate-900/80 border border-slate-800 rounded-lg px-2.5 py-1.5">
+                    <span>Sement: <strong class="text-white">{{ b.total_cement_kg }} kg</strong></span>
+                    <span>•</span>
+                    <span>
+                      Shag'al (3:1):
+                      <strong class="text-emerald-400">Mayda (qum kabi) {{ (Number(b.total_gravel_kg || 0) * 0.75).toFixed(0) }} kg</strong>
+                      /
+                      <strong class="text-sky-300">Yirik {{ (Number(b.total_gravel_kg || 0) * 0.25).toFixed(0) }} kg</strong>
+                    </span>
+                    <span>•</span>
+                    <span>Beton: <strong class="text-white">{{ b.total_concrete_m3 }} m³</strong></span>
                   </div>
 
                   <!-- Workers badges -->

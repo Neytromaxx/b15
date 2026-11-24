@@ -655,8 +655,17 @@ def sync_real_media_layout(conn: sqlite3.Connection):
         """)
         conn.commit()
 
+    # Update K104 (Kolodets) cement norm to exact real workshop norm: 7 kolodets = 200 kg cement (28.57 kg / unit)
+    cur.execute("""
+        UPDATE product_types
+        SET cement_norm_kg = 28.57,
+            gravel_norm_kg = 128.0
+        WHERE code = 'K104'
+    """)
+    conn.commit()
+
     # Seed the real 2026-11-23 daily unnumbered batch (50-lik: 1, 40-lik: 13, 30-lik: 16, workers: Shuhratjon, Ahliddin, Kadirov @ 180,000 UZS each)
-    cur.execute("SELECT COUNT(*) as cnt FROM daily_size_batches")
+    cur.execute("SELECT COUNT(*) as cnt FROM daily_size_batches WHERE work_date = '2026-11-23'")
     if cur.fetchone()["cnt"] == 0:
         items_seed = [
             {"code": "A50", "name": "50-lik Beton Ariq (Lotok)", "quantity": 1},
@@ -668,10 +677,6 @@ def sync_real_media_layout(conn: sqlite3.Connection):
             {"name": "Ahliddin", "amount": 180000},
             {"name": "Kadirov", "amount": 180000},
         ]
-        # 1 * A50 + 13 * A40 + 16 * A30 norms:
-        # A50: 38kg cement, 170kg gravel, 2.8kg wire, 0.145m3
-        # A40: 28kg cement, 125kg gravel, 2.1kg wire, 0.098m3
-        # A30: 20kg cement, 88kg gravel, 1.4kg wire, 0.066m3
         cem_kg = round(1 * 38.0 + 13 * 28.0 + 16 * 20.0, 1)
         grv_kg = round(1 * 170.0 + 13 * 125.0 + 16 * 88.0, 1)
         wir_kg = round(1 * 2.8 + 13 * 2.1 + 16 * 1.4, 2)
@@ -694,6 +699,52 @@ def sync_real_media_layout(conn: sqlite3.Connection):
             wir_kg,
             vol_m3,
             "50-lik: 1 dona, 40-lik: 13 ta, 30-lik: 16 ta (Jami 30 dona). Ishchilar: Shuhratjon, Ahliddin, Kadirov (3 kishiga 180,000 so'mdan = 540,000 so'm).",
+            datetime.now().isoformat(),
+        ))
+        conn.commit()
+
+    # Seed the real 2026-11-24 daily unnumbered batch:
+    # 7 ta Kolodets (200 kg sement), 12 ta 22-lik, 5 ta 40-lik, 1 ta 50-lik (Jami 25 dona)
+    # Maydalangan (qum kabi) shag'al yirikrog'iga qaraganda 3 barobar ko'p (3:1 nisbat = 75% mayda / 25% yirik)
+    # 3 ishchi (Shuhratjon, Ahliddin, Kadirov) har biriga 180,000 so'mdan = 540,000 so'm
+    cur.execute("SELECT COUNT(*) as cnt FROM daily_size_batches WHERE work_date = '2026-11-24'")
+    if cur.fetchone()["cnt"] == 0:
+        items_24 = [
+            {"code": "K104", "name": "Kolodets Xalqasi Ø118/104 (Max 60sm)", "quantity": 7},
+            {"code": "A22", "name": "22-lik Beton Ariq (Lotok)", "quantity": 12},
+            {"code": "A40", "name": "40-lik Beton Ariq (Lotok)", "quantity": 5},
+            {"code": "A50", "name": "50-lik Beton Ariq (Lotok)", "quantity": 1},
+        ]
+        workers_24 = [
+            {"name": "Shuhratjon", "amount": 180000},
+            {"name": "Ahliddin", "amount": 180000},
+            {"name": "Kadirov", "amount": 180000},
+        ]
+        # 7 * K104 = 200.0 kg cement; 12 * A22 = 168.0 kg; 5 * A40 = 140.0 kg; 1 * A50 = 38.0 kg -> Total = 546.0 kg
+        cem_24 = round(200.0 + 12 * 14.0 + 5 * 28.0 + 1 * 38.0, 1)
+        grv_24 = round(7 * 128.0 + 12 * 60.0 + 5 * 125.0 + 1 * 170.0, 1)
+        wir_24 = round(7 * 3.2 + 12 * 0.9 + 5 * 2.1 + 1 * 2.8, 2)
+        vol_24 = round(7 * 0.1465 + 12 * 0.056 + 5 * 0.098 + 1 * 0.145, 3)
+        fine_grv_24 = round(grv_24 * 0.75, 1)
+        coarse_grv_24 = round(grv_24 * 0.25, 1)
+        cur.execute("""
+            INSERT INTO daily_size_batches (
+                work_date, items_json, workers_json, total_qty, per_worker_wage,
+                total_labor_cost, total_cement_kg, total_gravel_kg, total_wire_kg,
+                total_concrete_m3, notes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            "2026-11-24",
+            json.dumps(items_24, ensure_ascii=False),
+            json.dumps(workers_24, ensure_ascii=False),
+            25,
+            180000.0,
+            540000.0,
+            cem_24,
+            grv_24,
+            wir_24,
+            vol_24,
+            f"7 ta Kolodets (200 kg sement), 12 ta 22-lik, 5 ta 40-lik, 1 dona 50-lik (Jami 25 dona). Shag'al 3:1 nisbatda (Mayda qum-shag'al: 75% / {fine_grv_24} kg, Yirik shag'al: 25% / {coarse_grv_24} kg). Ishchilar: Shuhratjon, Ahliddin, Kadirov (180,000 so'mdan = 540,000 so'm).",
             datetime.now().isoformat(),
         ))
         conn.commit()
