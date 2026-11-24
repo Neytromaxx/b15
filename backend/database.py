@@ -655,7 +655,7 @@ def sync_real_media_layout(conn: sqlite3.Connection):
         """)
         conn.commit()
 
-    # Seed the real 2026-11-23 daily unnumbered batch (50-lik: 1, 40-lik: 13, 30-lik: 16, workers: Shuhratjon, Ahliddin, Kadirov @ 170,000 UZS each)
+    # Seed the real 2026-11-23 daily unnumbered batch (50-lik: 1, 40-lik: 13, 30-lik: 16, workers: Shuhratjon, Ahliddin, Kadirov @ 180,000 UZS each)
     cur.execute("SELECT COUNT(*) as cnt FROM daily_size_batches")
     if cur.fetchone()["cnt"] == 0:
         items_seed = [
@@ -664,9 +664,9 @@ def sync_real_media_layout(conn: sqlite3.Connection):
             {"code": "A30", "name": "30-lik Beton Ariq (Lotok)", "quantity": 16},
         ]
         workers_seed = [
-            {"name": "Shuhratjon", "amount": 170000},
-            {"name": "Ahliddin", "amount": 170000},
-            {"name": "Kadirov", "amount": 170000},
+            {"name": "Shuhratjon", "amount": 180000},
+            {"name": "Ahliddin", "amount": 180000},
+            {"name": "Kadirov", "amount": 180000},
         ]
         # 1 * A50 + 13 * A40 + 16 * A30 norms:
         # A50: 38kg cement, 170kg gravel, 2.8kg wire, 0.145m3
@@ -687,13 +687,13 @@ def sync_real_media_layout(conn: sqlite3.Connection):
             json.dumps(items_seed, ensure_ascii=False),
             json.dumps(workers_seed, ensure_ascii=False),
             30,
-            170000.0,
-            510000.0,
+            180000.0,
+            540000.0,
             cem_kg,
             grv_kg,
             wir_kg,
             vol_m3,
-            "50-lik: 1 dona, 40-lik: 13 ta, 30-lik: 16 ta (Jami 30 dona). Ishchilar: Shuhratjon, Ahliddin, Kadirov (3 kishiga 170,000 so'mdan = 510,000 so'm).",
+            "50-lik: 1 dona, 40-lik: 13 ta, 30-lik: 16 ta (Jami 30 dona). Ishchilar: Shuhratjon, Ahliddin, Kadirov (3 kishiga 180,000 so'mdan = 540,000 so'm).",
             datetime.now().isoformat(),
         ))
         conn.commit()

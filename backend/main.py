@@ -187,7 +187,7 @@ class SizeBatchItem(BaseModel):
 
 class WorkerWageItem(BaseModel):
     name: str
-    amount: float = 170000.0
+    amount: float = 180000.0
 
 
 class DailySizeBatchCreate(BaseModel):
