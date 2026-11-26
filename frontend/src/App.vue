@@ -186,6 +186,8 @@ const showLegacyMoldProduction = ref(false)
 
 const sizeBatchForm = ref({
   work_date: new Date().toISOString().slice(0, 10),
+  is_working_day: 1,
+  stop_reason: "Avval quyilgan lotoklar qurimagan — quyish uchun yetarlicha bo'sh qolip yo'q",
   quantities: {
     A50: 1,
     A40: 5,
@@ -298,8 +300,10 @@ function loadSizeBatchForEdit(batch) {
 
   sizeBatchForm.value = {
     work_date: batch.work_date || new Date().toISOString().slice(0, 10),
+    is_working_day: batch.is_working_day === 0 ? 0 : 1,
+    stop_reason: batch.stop_reason || "Avval quyilgan lotoklar qurimagan — quyish uchun yetarlicha bo'sh qolip yo'q",
     quantities: qMap,
-    uniform_wage: Number(batch.per_worker_wage || 170000),
+    uniform_wage: Number(batch.per_worker_wage || 180000),
     workers: existingWorkers,
     new_worker_name: '',
     notes: batch.notes || '',
@@ -310,12 +314,14 @@ function resetSizeBatchForm() {
   editingSizeBatchId.value = null
   sizeBatchForm.value = {
     work_date: new Date().toISOString().slice(0, 10),
+    is_working_day: 1,
+    stop_reason: "Avval quyilgan lotoklar qurimagan — quyish uchun yetarlicha bo'sh qolip yo'q",
     quantities: { A50: 0, A40: 0, A30: 0, A22: 0, K104: 0, PL80: 0 },
-    uniform_wage: 170000,
+    uniform_wage: 180000,
     workers: [
-      { name: 'Shuhratjon', amount: 170000, active: true },
-      { name: 'Ahliddin', amount: 170000, active: true },
-      { name: 'Kadirov', amount: 170000, active: true },
+      { name: 'Shuhratjon', amount: 180000, active: true },
+      { name: 'Ahliddin', amount: 180000, active: true },
+      { name: 'Kadirov', amount: 180000, active: true },
     ],
     new_worker_name: '',
     notes: '',
@@ -323,19 +329,26 @@ function resetSizeBatchForm() {
 }
 
 async function submitSizeBatch() {
-  const items = sizeCatalogMeta.map((m) => ({
-    code: m.code,
-    quantity: Math.max(0, Number(sizeBatchForm.value.quantities[m.code] || 0)),
-  }))
-  const workers = sizeBatchForm.value.workers
-    .filter((w) => w.active && w.name.trim())
-    .map((w) => ({
-      name: w.name.trim(),
-      amount: Number(w.amount || 0),
-    }))
+  const isWork = Number(sizeBatchForm.value.is_working_day) === 0 ? 0 : 1
+  const items = isWork
+    ? sizeCatalogMeta.map((m) => ({
+        code: m.code,
+        quantity: Math.max(0, Number(sizeBatchForm.value.quantities[m.code] || 0)),
+      }))
+    : []
+  const workers = isWork
+    ? sizeBatchForm.value.workers
+        .filter((w) => w.active && w.name.trim())
+        .map((w) => ({
+          name: w.name.trim(),
+          amount: Number(w.amount || 0),
+        }))
+    : []
 
   const payload = {
     work_date: sizeBatchForm.value.work_date,
+    is_working_day: isWork,
+    stop_reason: isWork ? '' : sizeBatchForm.value.stop_reason,
     items,
     workers,
     notes: sizeBatchForm.value.notes,
@@ -344,13 +357,17 @@ async function submitSizeBatch() {
   if (editingSizeBatchId.value) {
     const res = await store.updateSizeBatch(editingSizeBatchId.value, payload)
     showToast(
-      `Kunlik yozuv (#${editingSizeBatchId.value}) yangilandi! Jami: ${res.total_qty} dona, Ish haqi: ${formatMoney(res.total_labor_cost)}`
+      isWork
+        ? `Kunlik yozuv (#${editingSizeBatchId.value}) yangilandi! Jami: ${res.total_qty} dona, Ish haqi: ${formatMoney(res.total_labor_cost)}`
+        : `Ish bo'lmagan kun (#${editingSizeBatchId.value}) va ob-havo yangilandi!`
     )
     editingSizeBatchId.value = null
   } else {
     const res = await store.createSizeBatch(payload)
     showToast(
-      `Saqlandi! Jami: ${res.total_qty} dona quyildi, ${workers.length} ta ishchiga jami ${formatMoney(res.total_labor_cost)} yozildi!`
+      isWork
+        ? `Saqlandi! Jami: ${res.total_qty} dona quyildi, ${workers.length} ta ishchiga jami ${formatMoney(res.total_labor_cost)} yozildi!`
+        : `Ish bo'lmagan kun sababi va ob-havo jurnalga saqlandi!`
     )
   }
 }
@@ -1025,8 +1042,68 @@ onMounted(() => {
               </div>
             </div>
 
-            <!-- 1. Product Sizes Quantities Grid -->
-            <div>
+            <!-- Working Day vs Non-Working Day (Mold Shortage / Curing Wait) Toggle & Live Weather Bar -->
+            <div class="flex flex-wrap items-center justify-between gap-2 bg-slate-950 border border-slate-800 rounded-xl p-2.5">
+              <div class="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  @click="sizeBatchForm.is_working_day = 1"
+                  :class="sizeBatchForm.is_working_day === 1 ? 'bg-emerald-600 text-white font-black' : 'bg-slate-900 text-slate-400 hover:text-white'"
+                  class="px-3 py-1.5 rounded-lg text-xs transition cursor-pointer"
+                >
+                  ✅ Ish bo'ldi (Quyilganlarni yozish)
+                </button>
+                <button
+                  type="button"
+                  @click="sizeBatchForm.is_working_day = 0"
+                  :class="sizeBatchForm.is_working_day === 0 ? 'bg-amber-500 text-slate-950 font-black' : 'bg-slate-900 text-slate-400 hover:text-white'"
+                  class="px-3 py-1.5 rounded-lg text-xs transition cursor-pointer"
+                >
+                  ⏸️ Ish bo'lmadi (Qolip band / Qurimagan)
+                </button>
+              </div>
+              <div v-if="store.weather" class="text-[11px] text-sky-300 flex items-center gap-2 px-2">
+                <span>🌤️ Avto Ob-havo ({{ store.settings.region_name }}):</span>
+                <strong class="text-white">{{ store.weather.temp_min }}°..{{ store.weather.temp_max }}°C</strong>
+                <span>• Namlik: <strong class="text-white">{{ store.weather.humidity }}%</strong></span>
+              </div>
+            </div>
+
+            <!-- Non-Working Day Reason Box (Shown when is_working_day === 0) -->
+            <div
+              v-if="sizeBatchForm.is_working_day === 0"
+              class="bg-amber-950/30 border border-amber-500/40 rounded-xl p-4 space-y-3"
+            >
+              <div class="text-xs font-bold text-amber-300">
+                ⏸️ Bugun nima sababdan ish bo'lmadi? (Ob-havo avtomatik biriktiriladi)
+              </div>
+              <div class="flex flex-wrap gap-1.5">
+                <button
+                  v-for="reason in [
+                    'Avval quyilgan lotoklar qurimagan — quyish uchun yetarlicha bo\'sh qolip yo\'q',
+                    'Sovuq ob-havo / Yomg\'ir sababli quyish to\'xtatildi',
+                    'Sement yoki shag\'al kutilmoqda',
+                    'Dam olish kuni',
+                  ]"
+                  :key="reason"
+                  type="button"
+                  @click="sizeBatchForm.stop_reason = reason"
+                  :class="sizeBatchForm.stop_reason === reason ? 'bg-amber-500 text-slate-950 font-bold border-amber-400' : 'bg-slate-900 text-slate-300 border-slate-700 hover:bg-slate-800'"
+                  class="px-2.5 py-1 rounded-lg border text-[11px] transition cursor-pointer"
+                >
+                  {{ reason }}
+                </button>
+              </div>
+              <input
+                v-model="sizeBatchForm.stop_reason"
+                type="text"
+                placeholder="To'xtalish sababini kiriting..."
+                class="w-full bg-slate-950 border border-amber-500/40 rounded-xl px-3 py-2 text-xs text-white"
+              />
+            </div>
+
+            <!-- 1. Product Sizes Quantities Grid (Shown when is_working_day === 1) -->
+            <div v-if="sizeBatchForm.is_working_day === 1">
               <div class="text-xs font-bold text-slate-300 mb-2 flex items-center justify-between">
                 <span>1. Quyilgan mahsulotlar soni (qolip raqamisiz, o'lcham bo'yicha):</span>
                 <span class="text-blue-400">Jami: {{ sizeBatchPreview.totalQty }} dona</span>
@@ -1071,7 +1148,7 @@ onMounted(() => {
             </div>
 
             <!-- 2. Workers & Wages Section (Shuhratjon, Ahliddin, Kadirov) -->
-            <div class="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-3">
+            <div v-if="sizeBatchForm.is_working_day === 1" class="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-3">
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <div class="text-xs font-bold text-amber-300">
@@ -1239,15 +1316,27 @@ onMounted(() => {
                 <div
                   v-for="b in store.sizeBatches"
                   :key="b.id"
-                  :class="editingSizeBatchId === b.id ? 'border-blue-500 bg-blue-950/20' : 'border-slate-800 bg-slate-950'"
+                  :class="
+                    editingSizeBatchId === b.id
+                      ? 'border-blue-500 bg-blue-950/20'
+                      : b.is_working_day === 0
+                      ? 'border-amber-500/40 bg-amber-950/15'
+                      : 'border-slate-800 bg-slate-950'
+                  "
                   class="rounded-xl border p-3.5 space-y-2.5 transition"
                 >
-                  <div class="flex items-center justify-between">
-                    <div class="flex items-center gap-2">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <div class="flex flex-wrap items-center gap-2">
                       <span class="text-xs font-black text-white bg-slate-800 px-2.5 py-1 rounded-lg">
                         📅 {{ b.work_date }}
                       </span>
-                      <span class="text-xs font-bold text-blue-400">
+                      <span
+                        v-if="b.is_working_day === 0"
+                        class="text-xs font-black text-amber-300 bg-amber-500/20 border border-amber-500/40 px-2.5 py-0.5 rounded-lg"
+                      >
+                        ⏸️ Ish bo'lmadi (0 dona)
+                      </span>
+                      <span v-else class="text-xs font-bold text-blue-400">
                         Jami: {{ b.total_qty }} dona
                       </span>
                     </div>
@@ -1267,8 +1356,32 @@ onMounted(() => {
                     </div>
                   </div>
 
-                  <!-- Cast items badges -->
-                  <div class="flex flex-wrap gap-1.5">
+                  <!-- Automatic Weather Strip for that day -->
+                  <div class="flex flex-wrap items-center justify-between gap-2 bg-slate-900 border border-slate-800/90 rounded-lg px-2.5 py-1.5 text-[11px]">
+                    <div class="flex flex-wrap items-center gap-2 text-slate-300">
+                      <span class="font-bold text-sky-300">⛅ {{ b.weather_condition || 'Qisman bulutli' }}</span>
+                      <span>•</span>
+                      <span>Harorat: <strong class="text-white">+{{ b.weather_temp_min ?? 4.0 }}°..+{{ b.weather_temp_max ?? 12.0 }}°C</strong> (o'rtacha {{ b.weather_temp_avg ?? 8.0 }}°C)</span>
+                      <span>•</span>
+                      <span>Namlik: <strong class="text-sky-300">{{ b.weather_humidity ?? 68 }}%</strong></span>
+                    </div>
+                  </div>
+
+                  <!-- Non-Working Day Stop Reason Banner -->
+                  <div
+                    v-if="b.is_working_day === 0"
+                    class="bg-amber-500/10 border border-amber-500/30 rounded-lg p-2.5 text-xs space-y-1"
+                  >
+                    <div class="font-bold text-amber-300">
+                      ⚠️ Sababi: {{ b.stop_reason || b.notes }}
+                    </div>
+                    <div v-if="b.curing_advice" class="text-[11px] text-slate-300">
+                      💡 {{ b.curing_advice }}
+                    </div>
+                  </div>
+
+                  <!-- Cast items badges (Working Day) -->
+                  <div v-if="b.is_working_day !== 0" class="flex flex-wrap gap-1.5">
                     <span
                       v-for="it in (b.items || []).filter((x) => Number(x.quantity || 0) > 0)"
                       :key="it.code"
@@ -1278,8 +1391,11 @@ onMounted(() => {
                     </span>
                   </div>
 
-                  <!-- Material & Gravel 3:1 Breakdown Row -->
-                  <div class="flex flex-wrap items-center gap-2 text-[11px] text-slate-300 bg-slate-900/80 border border-slate-800 rounded-lg px-2.5 py-1.5">
+                  <!-- Material & Gravel 3:1 Breakdown Row (Working Day) -->
+                  <div
+                    v-if="b.is_working_day !== 0"
+                    class="flex flex-wrap items-center gap-2 text-[11px] text-slate-300 bg-slate-900/80 border border-slate-800 rounded-lg px-2.5 py-1.5"
+                  >
                     <span>Sement: <strong class="text-white">{{ b.total_cement_kg }} kg</strong></span>
                     <span>•</span>
                     <span>
@@ -1292,8 +1408,11 @@ onMounted(() => {
                     <span>Beton: <strong class="text-white">{{ b.total_concrete_m3 }} m³</strong></span>
                   </div>
 
-                  <!-- Workers badges -->
-                  <div class="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-800/80 text-xs">
+                  <!-- Workers badges (Working Day) -->
+                  <div
+                    v-if="b.is_working_day !== 0"
+                    class="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-800/80 text-xs"
+                  >
                     <div class="flex flex-wrap gap-1.5">
                       <span
                         v-for="w in b.workers || []"

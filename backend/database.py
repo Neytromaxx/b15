@@ -499,11 +499,13 @@ def _init_db_tables():
     );
     """)
 
-    # 11. Daily Size Batches (Qolip identifikatsiya raqamisiz o'lcham bo'yicha quyilganlar va ishchilar tabeli)
+    # 11. Daily Size Batches (Qolip identifikatsiya raqamisiz o'lcham bo'yicha quyilganlar, ishchilar tabeli va ob-havo)
     cur.execute("""
     CREATE TABLE IF NOT EXISTS daily_size_batches (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         work_date TEXT NOT NULL,
+        is_working_day INTEGER NOT NULL DEFAULT 1,
+        stop_reason TEXT DEFAULT '',
         items_json TEXT NOT NULL DEFAULT '[]',
         workers_json TEXT NOT NULL DEFAULT '[]',
         total_qty INTEGER NOT NULL DEFAULT 0,
@@ -513,10 +515,33 @@ def _init_db_tables():
         total_gravel_kg REAL NOT NULL DEFAULT 0,
         total_wire_kg REAL NOT NULL DEFAULT 0,
         total_concrete_m3 REAL NOT NULL DEFAULT 0,
+        weather_temp_min REAL DEFAULT 5.0,
+        weather_temp_max REAL DEFAULT 14.0,
+        weather_temp_avg REAL DEFAULT 9.5,
+        weather_humidity REAL DEFAULT 65.0,
+        weather_condition TEXT DEFAULT 'Qisman bulutli',
+        curing_advice TEXT DEFAULT '',
         notes TEXT DEFAULT '',
         created_at TEXT
     );
     """)
+
+    for col_name, col_def in [
+        ("is_working_day", "INTEGER NOT NULL DEFAULT 1"),
+        ("stop_reason", "TEXT DEFAULT ''"),
+        ("weather_temp_min", "REAL DEFAULT 5.0"),
+        ("weather_temp_max", "REAL DEFAULT 14.0"),
+        ("weather_temp_avg", "REAL DEFAULT 9.5"),
+        ("weather_humidity", "REAL DEFAULT 65.0"),
+        ("weather_condition", "TEXT DEFAULT 'Qisman bulutli'"),
+        ("curing_advice", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            cur.execute(f"ALTER TABLE daily_size_batches ADD COLUMN {col_name} {col_def};")
+            conn.commit()
+        except Exception:
+            if hasattr(conn, "rollback"):
+                conn.rollback()
 
     conn.commit()
     seed_initial_data(conn)
@@ -789,6 +814,76 @@ def sync_real_media_layout(conn: sqlite3.Connection):
             datetime.now().isoformat(),
         ))
         conn.commit()
+
+    # Seed 2026-11-26 (No work today due to previously cast lotoks not yet cured / lack of empty molds)
+    cur.execute("SELECT COUNT(*) as cnt FROM daily_size_batches WHERE work_date = '2026-11-26'")
+    if cur.fetchone()["cnt"] == 0:
+        cur.execute("""
+            INSERT INTO daily_size_batches (
+                work_date, is_working_day, stop_reason, items_json, workers_json,
+                total_qty, per_worker_wage, total_labor_cost, total_cement_kg,
+                total_gravel_kg, total_wire_kg, total_concrete_m3,
+                weather_temp_min, weather_temp_max, weather_temp_avg, weather_humidity,
+                weather_condition, curing_advice, notes, created_at
+            ) VALUES (?, 0, ?, '[]', '[]', 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.2, 11.4, 7.3, 74.0, 'Salqin va bulutli', ?, ?, ?)
+        """, (
+            "2026-11-26",
+            "Avval quyilgan lotoklar qurimagan — quyish uchun yetarlicha bo'sh qolip yo'q",
+            "Kechasi +3.2°C va namlik 74% bo'lgani uchun 24-25 noyabrda quyilgan lotoklar sekin qotmoqda (kamida 36-48 soat ushlash zarur).",
+            "Bugun ish bo'lmadi: Avval quyilgan lotoklar salqin ob-havoda hali to'liq qurimagan (qotmagan), quyish uchun yetarlicha bo'sh qolip yo'q.",
+            datetime.now().isoformat(),
+        ))
+        conn.commit()
+
+    # Ensure accurate daily weather & daily_logs sync for 2026-11-23 .. 2026-11-26
+    weather_history = [
+        ("2026-11-23", 1, "", 5.8, 15.6, 10.7, 56.0, 9.5, "Ochiq quyoshli", "Mo'tadil harorat (+5.8°..+15.6°C): Beton me'yorda qotmoqda (~24 soat).", 30, 0, 540000.0, "50-lik: 1, 40-lik: 13, 30-lik: 16 (30 dona). Ishchilar: Shuhratjon, Ahliddin, Kadirov (180,000 so'mdan)."),
+        ("2026-11-24", 1, "", 4.9, 14.2, 9.6, 62.0, 10.2, "Qisman bulutli", "Salqinroq kecha (+4.9°C): Ariq qoliplarini yechishda burchaklariga e'tibor bering.", 18, 7, 540000.0, "Kolodets: 7 ta (200kg sement), 22-lik: 12, 40-lik: 5, 50-lik: 1 (25 dona). Shag'al 3:1 nisbatda."),
+        ("2026-11-25", 1, "", 3.9, 12.8, 8.4, 69.0, 11.4, "Qisman bulutli", "Harorat pasaydi (+3.9°..+12.8°C, namlik 69%): Lotoklar qotishi sekinlashadi (~36-48 soat).", 30, 0, 540000.0, "50-lik: 1, 40-lik: 13, 30-lik: 16 (30 dona). Barcha bo'sh qoliplar to'ldirildi."),
+        ("2026-11-26", 0, "Avval quyilgan lotoklar qurimagan — quyish uchun yetarlicha bo'sh qolip yo'q", 3.2, 11.4, 7.3, 74.0, 8.8, "Salqin va bulutli", "Sovuq va nam (+3.2°..+11.4°C, namlik 74%): Kecha quyilgan lotoklar hali qurimagan, qolipdan erta yechish mumkin emas!", 0, 0, 0.0, "ISH BO'LMADI: Avval quyilgan lotoklar qurimagani sababli bo'sh qolip yetarli emas."),
+    ]
+    for w_date, is_work, s_reason, t_min, t_max, t_avg, hum, wind, cond, adv, ariq_cnt, kol_cnt, l_cost, d_note in weather_history:
+        cur.execute("""
+            UPDATE daily_size_batches
+            SET is_working_day = ?,
+                stop_reason = CASE WHEN stop_reason = '' OR stop_reason IS NULL THEN ? ELSE stop_reason END,
+                weather_temp_min = ?,
+                weather_temp_max = ?,
+                weather_temp_avg = ?,
+                weather_humidity = ?,
+                weather_condition = ?,
+                curing_advice = ?
+            WHERE work_date = ?
+        """, (is_work, s_reason, t_min, t_max, t_avg, hum, cond, adv, w_date))
+
+        cur.execute("SELECT id FROM daily_logs WHERE work_date = ?", (w_date,))
+        if cur.fetchone():
+            cur.execute("""
+                UPDATE daily_logs
+                SET is_working_day = ?,
+                    weather_temp_min = ?,
+                    weather_temp_max = ?,
+                    weather_temp_avg = ?,
+                    weather_humidity = ?,
+                    weather_wind_kmh = ?,
+                    weather_condition = ?,
+                    curing_advice = ?,
+                    cast_count = ?,
+                    cyclic_cast_count = ?,
+                    labor_cost_total = ?,
+                    notes = ?
+                WHERE work_date = ?
+            """, (is_work, t_min, t_max, t_avg, hum, wind, cond, adv, ariq_cnt, kol_cnt, l_cost, d_note, w_date))
+        else:
+            cur.execute("""
+                INSERT INTO daily_logs (
+                    work_date, is_working_day, region_name,
+                    weather_temp_max, weather_temp_min, weather_temp_avg, weather_humidity, weather_wind_kmh,
+                    weather_condition, curing_advice,
+                    demolded_count, cast_count, cyclic_cast_count, defect_count, labor_cost_total, notes, created_at
+                ) VALUES (?, ?, 'Farg''ona', ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?, ?)
+            """, (w_date, is_work, t_max, t_min, t_avg, hum, wind, cond, adv, ariq_cnt, kol_cnt, l_cost, d_note, datetime.now().isoformat()))
+    conn.commit()
 
 
 def seed_initial_data(conn: sqlite3.Connection):

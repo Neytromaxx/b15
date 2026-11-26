@@ -192,8 +192,10 @@ class WorkerWageItem(BaseModel):
 
 class DailySizeBatchCreate(BaseModel):
     work_date: Optional[str] = None
-    items: List[SizeBatchItem]
-    workers: List[WorkerWageItem]
+    is_working_day: int = 1
+    stop_reason: str = ""
+    items: List[SizeBatchItem] = []
+    workers: List[WorkerWageItem] = []
     notes: str = ""
 
 
@@ -1369,36 +1371,51 @@ def _compute_batch_metrics(cur, items: List[SizeBatchItem], workers: List[Worker
 def create_daily_size_batch(payload: DailySizeBatchCreate):
     work_date = payload.work_date or datetime.now().strftime("%Y-%m-%d")
     conn = get_connection()
-    ensure_daily_log(conn, work_date)
+    d_log = ensure_daily_log(conn, work_date)
     cur = conn.cursor()
 
-    m = _compute_batch_metrics(cur, payload.items, payload.workers)
+    is_work = 1 if payload.is_working_day else 0
+    stop_reason = (payload.stop_reason or "").strip()
 
-    # Update product stock quantities
-    for it in m["items"]:
-        if it["quantity"] > 0:
-            cur.execute(
-                "UPDATE product_types SET stock_qty = stock_qty + ? WHERE code = ?",
-                (it["quantity"], it["code"]),
-            )
-
-    # Deduct raw materials
-    if m["total_cement_kg"] > 0 or m["total_gravel_kg"] > 0 or m["total_wire_kg"] > 0:
-        deduct_raw_materials(conn, m["total_cement_kg"], m["total_gravel_kg"], m["total_wire_kg"], work_date)
-
-    # Build auto summary note if none provided
-    parts_str = ", ".join(f"{it['code']}: {it['quantity']} ta" for it in m["items"] if it["quantity"] > 0)
-    workers_str = ", ".join(f"{w['name']} ({int(w['amount']):,} so'm)" for w in m["workers"])
-    auto_note = payload.notes.strip() or f"Quyilgan: {parts_str}. Ishchilar: {workers_str}"
+    if is_work == 0:
+        m = {
+            "items": [],
+            "workers": [],
+            "total_qty": 0,
+            "per_worker_wage": 0.0,
+            "total_labor_cost": 0.0,
+            "total_cement_kg": 0.0,
+            "total_gravel_kg": 0.0,
+            "total_wire_kg": 0.0,
+            "total_concrete_m3": 0.0,
+        }
+        auto_note = payload.notes.strip() or f"ISH BO'LMADI: {stop_reason or 'Avval quyilgan lotoklar qurimagan — quyish uchun bo''sh qolip yo''q'}"
+    else:
+        m = _compute_batch_metrics(cur, payload.items, payload.workers)
+        for it in m["items"]:
+            if it["quantity"] > 0:
+                cur.execute(
+                    "UPDATE product_types SET stock_qty = stock_qty + ? WHERE code = ?",
+                    (it["quantity"], it["code"]),
+                )
+        if m["total_cement_kg"] > 0 or m["total_gravel_kg"] > 0 or m["total_wire_kg"] > 0:
+            deduct_raw_materials(conn, m["total_cement_kg"], m["total_gravel_kg"], m["total_wire_kg"], work_date)
+        parts_str = ", ".join(f"{it['code']}: {it['quantity']} ta" for it in m["items"] if it["quantity"] > 0)
+        workers_str = ", ".join(f"{w['name']} ({int(w['amount']):,} so'm)" for w in m["workers"])
+        auto_note = payload.notes.strip() or f"Quyilgan: {parts_str}. Ishchilar: {workers_str}"
 
     cur.execute("""
         INSERT INTO daily_size_batches (
-            work_date, items_json, workers_json, total_qty, per_worker_wage,
-            total_labor_cost, total_cement_kg, total_gravel_kg, total_wire_kg,
-            total_concrete_m3, notes, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            work_date, is_working_day, stop_reason, items_json, workers_json,
+            total_qty, per_worker_wage, total_labor_cost, total_cement_kg,
+            total_gravel_kg, total_wire_kg, total_concrete_m3,
+            weather_temp_min, weather_temp_max, weather_temp_avg, weather_humidity,
+            weather_condition, curing_advice, notes, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         work_date,
+        is_work,
+        stop_reason,
         json.dumps(m["items"], ensure_ascii=False),
         json.dumps(m["workers"], ensure_ascii=False),
         m["total_qty"],
@@ -1408,6 +1425,12 @@ def create_daily_size_batch(payload: DailySizeBatchCreate):
         m["total_gravel_kg"],
         m["total_wire_kg"],
         m["total_concrete_m3"],
+        d_log.get("weather_temp_min", 4.0),
+        d_log.get("weather_temp_max", 12.0),
+        d_log.get("weather_temp_avg", 8.0),
+        d_log.get("weather_humidity", 68.0),
+        d_log.get("weather_condition", "Qisman bulutli"),
+        d_log.get("curing_advice", ""),
         auto_note,
         datetime.now().isoformat(),
     ))
@@ -1415,15 +1438,16 @@ def create_daily_size_batch(payload: DailySizeBatchCreate):
 
     cur.execute("""
         UPDATE daily_logs
-        SET cast_count = cast_count + ?,
+        SET is_working_day = ?,
+            cast_count = cast_count + ?,
             labor_cost_total = labor_cost_total + ?,
             notes = CASE WHEN notes = '' OR notes IS NULL THEN ? ELSE notes || ' | ' || ? END
         WHERE work_date = ?
-    """, (m["total_qty"], m["total_labor_cost"], auto_note, auto_note, work_date))
+    """, (is_work, m["total_qty"], m["total_labor_cost"], auto_note, auto_note, work_date))
 
     conn.commit()
     conn.close()
-    return {"id": new_id, **m}
+    return {"id": new_id, "is_working_day": is_work, "stop_reason": stop_reason, **m}
 
 
 @app.put("/api/production/size-batches/{batch_id}")
@@ -1438,15 +1462,35 @@ def update_daily_size_batch(batch_id: int, payload: DailySizeBatchCreate):
     existing = dict(existing)
 
     work_date = payload.work_date or existing["work_date"]
-    ensure_daily_log(conn, work_date)
+    d_log = ensure_daily_log(conn, work_date)
+
+    is_work = 1 if payload.is_working_day else 0
+    stop_reason = (payload.stop_reason or "").strip()
 
     old_items = json.loads(existing.get("items_json") or "[]")
     old_qty_by_code = {it["code"]: int(it.get("quantity") or 0) for it in old_items}
 
-    m = _compute_batch_metrics(cur, payload.items, payload.workers)
+    if is_work == 0:
+        m = {
+            "items": [],
+            "workers": [],
+            "total_qty": 0,
+            "per_worker_wage": 0.0,
+            "total_labor_cost": 0.0,
+            "total_cement_kg": 0.0,
+            "total_gravel_kg": 0.0,
+            "total_wire_kg": 0.0,
+            "total_concrete_m3": 0.0,
+        }
+        auto_note = payload.notes.strip() or f"ISH BO'LMADI: {stop_reason or 'Avval quyilgan lotoklar qurimagan — quyish uchun bo''sh qolip yo''q'}"
+    else:
+        m = _compute_batch_metrics(cur, payload.items, payload.workers)
+        parts_str = ", ".join(f"{it['code']}: {it['quantity']} ta" for it in m["items"] if it["quantity"] > 0)
+        workers_str = ", ".join(f"{w['name']} ({int(w['amount']):,} so'm)" for w in m["workers"])
+        auto_note = payload.notes.strip() or f"Quyilgan: {parts_str}. Ishchilar: {workers_str}"
+
     new_qty_by_code = {it["code"]: int(it.get("quantity") or 0) for it in m["items"]}
 
-    # Apply stock deltas
     all_codes = set(old_qty_by_code.keys()) | set(new_qty_by_code.keys())
     for code in all_codes:
         delta = new_qty_by_code.get(code, 0) - old_qty_by_code.get(code, 0)
@@ -1458,18 +1502,18 @@ def update_daily_size_batch(batch_id: int, payload: DailySizeBatchCreate):
                 (delta, code),
             )
 
-    parts_str = ", ".join(f"{it['code']}: {it['quantity']} ta" for it in m["items"] if it["quantity"] > 0)
-    workers_str = ", ".join(f"{w['name']} ({int(w['amount']):,} so'm)" for w in m["workers"])
-    auto_note = payload.notes.strip() or f"Quyilgan: {parts_str}. Ishchilar: {workers_str}"
-
     cur.execute("""
         UPDATE daily_size_batches
-        SET work_date = ?, items_json = ?, workers_json = ?, total_qty = ?,
-            per_worker_wage = ?, total_labor_cost = ?, total_cement_kg = ?,
-            total_gravel_kg = ?, total_wire_kg = ?, total_concrete_m3 = ?, notes = ?
+        SET work_date = ?, is_working_day = ?, stop_reason = ?, items_json = ?, workers_json = ?,
+            total_qty = ?, per_worker_wage = ?, total_labor_cost = ?, total_cement_kg = ?,
+            total_gravel_kg = ?, total_wire_kg = ?, total_concrete_m3 = ?,
+            weather_temp_min = ?, weather_temp_max = ?, weather_temp_avg = ?,
+            weather_humidity = ?, weather_condition = ?, curing_advice = ?, notes = ?
         WHERE id = ?
     """, (
         work_date,
+        is_work,
+        stop_reason,
         json.dumps(m["items"], ensure_ascii=False),
         json.dumps(m["workers"], ensure_ascii=False),
         m["total_qty"],
@@ -1479,6 +1523,12 @@ def update_daily_size_batch(batch_id: int, payload: DailySizeBatchCreate):
         m["total_gravel_kg"],
         m["total_wire_kg"],
         m["total_concrete_m3"],
+        d_log.get("weather_temp_min", 4.0),
+        d_log.get("weather_temp_max", 12.0),
+        d_log.get("weather_temp_avg", 8.0),
+        d_log.get("weather_humidity", 68.0),
+        d_log.get("weather_condition", "Qisman bulutli"),
+        d_log.get("curing_advice", ""),
         auto_note,
         batch_id,
     ))
@@ -1487,14 +1537,15 @@ def update_daily_size_batch(batch_id: int, payload: DailySizeBatchCreate):
     labor_delta = m["total_labor_cost"] - float(existing.get("total_labor_cost") or 0)
     cur.execute("""
         UPDATE daily_logs
-        SET cast_count = cast_count + ?,
+        SET is_working_day = ?,
+            cast_count = cast_count + ?,
             labor_cost_total = labor_cost_total + ?
         WHERE work_date = ?
-    """, (qty_delta, labor_delta, work_date))
+    """, (is_work, qty_delta, labor_delta, work_date))
 
     conn.commit()
     conn.close()
-    return {"id": batch_id, **m}
+    return {"id": batch_id, "is_working_day": is_work, "stop_reason": stop_reason, **m}
 
 
 @app.delete("/api/production/size-batches/{batch_id}")
