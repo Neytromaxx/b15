@@ -835,6 +835,10 @@ def sync_real_media_layout(conn: sqlite3.Connection):
         ))
         conn.commit()
 
+    # Remove any old pre-2026-11-23 demo logs so only real production logs (from 2026-11-23 onwards) remain
+    cur.execute("DELETE FROM daily_logs WHERE work_date < '2026-11-23';")
+    conn.commit()
+
     # Ensure accurate daily weather & daily_logs sync for 2026-11-23 .. 2026-11-26
     weather_history = [
         ("2026-11-23", 1, "", 5.8, 15.6, 10.7, 56.0, 9.5, "Ochiq quyoshli", "Mo'tadil harorat (+5.8°..+15.6°C): Beton me'yorda qotmoqda (~24 soat).", 30, 0, 540000.0, "50-lik: 1, 40-lik: 13, 30-lik: 16 (30 dona). Ishchilar: Shuhratjon, Ahliddin, Kadirov (180,000 so'mdan)."),
@@ -1124,21 +1128,7 @@ def seed_initial_data(conn: sqlite3.Connection):
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, b)
 
-    # 4. Seed Daily Logs (Oxirgi 3 kunlik ish va ob-havo logi)
-    daily_seed = [
-        (two_days_ago_str, 1, "Toshkent", 21.0, 9.0, 15.0, 48.0, 12.0, "Ochiq quyoshli", "Mo'tadil ob-havo: Beton qotishi uchun ideal sharoit (18-20 soatda yechish mumkin).", 16, 18, 19, 1, 953000, "19 ta kolodets bitta qolipda quyildi"),
-        (yesterday_str, 1, "Toshkent", 18.5, 7.5, 13.0, 55.0, 15.0, "Qisman bulutli", "Normal harorat: Qoliplarni moylashga e'tibor bering.", 18, 17, 21, 2, 1025000, "#12 va #19 qoliplar burchagi ushlab qoldi, #26 kolodets qolipida 21 dona chiqdi"),
-        (today_str, 1, "Toshkent", 19.2, 8.1, 14.2, 50.0, 10.5, "Ochiq va iliq", "Qotish me'yorda. #12 qolip remontga olindi.", 14, 13, 18, 1, 868000, "Bugun 18 ta kolodets va 13 ta ariq quyildi"),
-    ]
-    for d in daily_seed:
-        cur.execute("""
-        INSERT INTO daily_logs (
-            work_date, is_working_day, region_name,
-            weather_temp_max, weather_temp_min, weather_temp_avg, weather_humidity, weather_wind_kmh,
-            weather_condition, curing_advice,
-            demolded_count, cast_count, cyclic_cast_count, defect_count, labor_cost_total, notes, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (*d, datetime.now().isoformat()))
+    # 4. Daily logs are seeded from real production starting 2026-11-23 in sync_real_media_layout()
 
     # 5. Seed Orders (Buyurtmalar)
     orders_seed = [
