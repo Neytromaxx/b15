@@ -749,6 +749,47 @@ def sync_real_media_layout(conn: sqlite3.Connection):
         ))
         conn.commit()
 
+    # Seed the real 2026-11-25 daily unnumbered batch (same as 2026-11-23: 50-lik: 1, 40-lik: 13, 30-lik: 16 = 30 dona, workers: Shuhratjon, Ahliddin, Kadirov @ 180,000 UZS each)
+    cur.execute("SELECT COUNT(*) as cnt FROM daily_size_batches WHERE work_date = '2026-11-25'")
+    if cur.fetchone()["cnt"] == 0:
+        items_25 = [
+            {"code": "A50", "name": "50-lik Beton Ariq (Lotok)", "quantity": 1},
+            {"code": "A40", "name": "40-lik Beton Ariq (Lotok)", "quantity": 13},
+            {"code": "A30", "name": "30-lik Beton Ariq (Lotok)", "quantity": 16},
+        ]
+        workers_25 = [
+            {"name": "Shuhratjon", "amount": 180000},
+            {"name": "Ahliddin", "amount": 180000},
+            {"name": "Kadirov", "amount": 180000},
+        ]
+        cem_25 = round(1 * 38.0 + 13 * 28.0 + 16 * 20.0, 1)
+        grv_25 = round(1 * 170.0 + 13 * 125.0 + 16 * 88.0, 1)
+        wir_25 = round(1 * 2.8 + 13 * 2.1 + 16 * 1.4, 2)
+        vol_25 = round(1 * 0.145 + 13 * 0.098 + 16 * 0.066, 3)
+        fine_grv_25 = round(grv_25 * 0.75, 1)
+        coarse_grv_25 = round(grv_25 * 0.25, 1)
+        cur.execute("""
+            INSERT INTO daily_size_batches (
+                work_date, items_json, workers_json, total_qty, per_worker_wage,
+                total_labor_cost, total_cement_kg, total_gravel_kg, total_wire_kg,
+                total_concrete_m3, notes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            "2026-11-25",
+            json.dumps(items_25, ensure_ascii=False),
+            json.dumps(workers_25, ensure_ascii=False),
+            30,
+            180000.0,
+            540000.0,
+            cem_25,
+            grv_25,
+            wir_25,
+            vol_25,
+            f"50-lik: 1 dona, 40-lik: 13 ta, 30-lik: 16 ta (Jami 30 dona). Shag'al 3:1 nisbatda (Mayda qum-shag'al: 75% / {fine_grv_25} kg, Yirik shag'al: 25% / {coarse_grv_25} kg). Ishchilar: Shuhratjon, Ahliddin, Kadirov (3 kishiga 180,000 so'mdan = 540,000 so'm).",
+            datetime.now().isoformat(),
+        ))
+        conn.commit()
+
 
 def seed_initial_data(conn: sqlite3.Connection):
     cur = conn.cursor()
